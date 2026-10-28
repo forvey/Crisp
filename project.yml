@@ -87,6 +87,9 @@ targets:
       - path: Crisp/Models/CrispAudioWire.swift
       - path: Crisp/Models/CrispAudioResampler.swift
       - path: Crisp/Services/CrispAudioServer.swift
+      - path: Crisp/Models/LagData.swift
+      - path: Crisp/Services/CrispLagSession.swift
+      - path: Crisp/Services/CrispLagPattern.swift
       - path: Crisp/Models/DDCOperationGeneration.swift
       - path: Crisp/Models/DDCTopologyChange.swift
       - path: Crisp/Models/RefreshRateFormat.swift

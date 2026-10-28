@@ -25,6 +25,7 @@ final class CrispSystemAudioCapture {
     private let changeQueue = DispatchQueue(label: "com.crisp.remote-audio.device-changes")
     private var observed: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
     var onFailure: @Sendable (String) -> Void = { _ in }
+    var recorder: LagRecorder?
 
     func start() throws {
         stop()
@@ -90,6 +91,8 @@ final class CrispSystemAudioCapture {
     }
 
     func packet() throws -> Data {
+        let began = recorder.map { _ in LagRecorder.now() }
+        defer { if let began { recorder?.duration("capture.convert_ms", since: began) } }
         guard let ring, let converter else { throw CrispAudioWire.Failure(reason: "System audio capture is not running") }
         var timebase = mach_timebase_info_data_t()
         mach_timebase_info(&timebase)
@@ -99,8 +102,10 @@ final class CrispSystemAudioCapture {
         guard stalled < 3 else {
             throw CrispAudioWire.Failure(reason: "System audio capture produced no buffers. Check recording permission, then reconnect.")
         }
+        recorder?.value("capture.last_callback_age_ms", stalled * 1000)
         var input = [Float](repeating: 0, count: Int(sourceRate / 50))
-        input.withUnsafeMutableBufferPointer { _ = CrispRingRead(ring.reference, $0.baseAddress!, $0.count) }
+        let read = input.withUnsafeMutableBufferPointer { CrispRingRead(ring.reference, $0.baseAddress!, $0.count) }
+        if read < input.count { recorder?.count("capture.short_read_frames", input.count - read) }
         output += try converter.convert(input)
         if output.count > 2400 { output.removeFirst(output.count - 2400) }
         let samples = Array(output.prefix(480))
@@ -140,6 +145,9 @@ final class CrispHardwareAudioBackend: CrispAudioBackend, @unchecked Sendable {
     private let capture = CrispSystemAudioCapture()
     private var microphoneStarted = false
     var onFailure: @Sendable (String) -> Void = { _ in }
+    func setDiagnostics(_ recorder: LagRecorder?) {
+        capture.recorder = recorder; microphone.setDiagnostics(recorder)
+    }
 
     func validate() throws {} // Listening alone does not require a virtual input device.
     func start() throws {

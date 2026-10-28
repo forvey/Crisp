@@ -51,6 +51,7 @@ struct CrispRemoteAudioRow: View {
     private var status: String? {
         if let error = audio.state.error { return error }
         guard audio.state.listening else { return nil }
+        if audio.state.diagnosing { return String(localized: "Diagnostics active (up to 60 s)") }
         if audio.state.microphone { return String(localized: "Microphone On") }
         return audio.state.connected ? String(localized: "Connected") : String(localized: "Waiting for Connection")
     }

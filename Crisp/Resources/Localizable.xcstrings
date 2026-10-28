@@ -1,6 +1,12 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Diagnostics active (up to 60 s)": {
+      "localizations": {
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在诊断（最长 60 秒）" } },
+        "zh-Hant": { "stringUnit": { "state": "translated", "value": "正在診斷（最長 60 秒）" } }
+      }
+    },
     "Speaker": {
       "localizations": {
         "zh-Hans": {

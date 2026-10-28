@@ -4,7 +4,7 @@ import Darwin
 
 /// Synthetic backend: no HAL device, process tap, microphone or speaker is opened.
 final class SyntheticAudio: CrispAudioBackend, @unchecked Sendable {
-    struct Snapshot { let active: Bool; let microphone: Bool; let received: Int; let resets: Int }
+    struct Snapshot { let active: Bool; let microphone: Bool; let received: Int; let resets: Int; let diagnosing: Bool }
     var onFailure: @Sendable (String) -> Void = { _ in }
     private let lock = NSLock()
     private var enabled = false
@@ -12,6 +12,8 @@ final class SyntheticAudio: CrispAudioBackend, @unchecked Sendable {
     private var received = 0
     private var resetCount = 0
     private var microphoneAvailable = true
+    private var diagnosing = false
+    func setDiagnostics(_ recorder: LagRecorder?) { lock.lock(); diagnosing = recorder != nil; lock.unlock() }
     let downlink = CrispAudioPCM.bytes((0..<480).map { sin(Float($0) * 0.05) * 0.1 })
     let uplink = Data(repeating: 17, count: 960)
     func validate() throws {}
@@ -32,7 +34,51 @@ final class SyntheticAudio: CrispAudioBackend, @unchecked Sendable {
     func downlinkPCM() -> Data { downlink }
     func snapshot() -> Snapshot {
         lock.lock(); defer { lock.unlock() }
-        return Snapshot(active: active, microphone: enabled, received: received, resets: resetCount)
+        return Snapshot(active: active, microphone: enabled, received: received, resets: resetCount, diagnosing: diagnosing)
+    }
+}
+
+/// Real diagnostic frames against the real listener; never opens hardware.
+final class DiagnosticPeer: @unchecked Sendable {
+    let id = UUID().uuidString
+    private let queue = DispatchQueue(label: "DiagnosticPeer")
+    private let connection: NWConnection
+    private let lock = NSLock()
+    private var parser = LagWire.Parser()
+    private var messages: [LagMessage] = []
+    private var closed = false
+    init(port: UInt16, duration: Double = 3, malformed: Bool = false) {
+        connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: AudioWire.parameters())
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            if case .ready = state {
+                self.connection.send(content: LagWire.framed(LagWire.hello), completion: .contentProcessed { _ in })
+                let message = LagMessage(kind: "start", version: malformed ? 99 : 1, id: self.id, scope: .both, duration: duration)
+                self.connection.send(content: try! LagWire.encode(message), completion: .contentProcessed { _ in })
+                self.receive()
+            }
+        }
+        connection.start(queue: queue)
+    }
+    private func receive() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, eof, error in
+            guard let self else { return }
+            if let data, let messages = try? self.parser.append(data) {
+                self.lock.lock(); self.messages += messages; self.lock.unlock()
+            }
+            if eof || error != nil { self.lock.lock(); self.closed = true; self.lock.unlock() }
+            else { self.receive() }
+        }
+    }
+    func count(_ kind: String) -> Int { lock.lock(); defer { lock.unlock() }; return messages.filter { $0.kind == kind }.count }
+    func isClosed() -> Bool { lock.lock(); defer { lock.unlock() }; return closed }
+    func cancel() { connection.cancel() }
+    func stop(appendRestart: Bool = false) {
+        var data = try! LagWire.encode(LagMessage(kind: "stop", id: id))
+        if appendRestart {
+            data += try! LagWire.encode(LagMessage(kind: "start", id: id, scope: .both, duration: 60))
+        }
+        connection.send(content: data, completion: .contentProcessed { _ in })
     }
 }
 
@@ -105,6 +151,39 @@ final class Counter: @unchecked Sendable {
         }
         server.start(port: testPort, loopbackOnly: true)
         precondition(ready.wait(timeout: .now() + 5) == .success)
+        // Diagnosis with BOTH audio controls off must not start capture, reset
+        // the microphone or keep sampling beyond the independently set timeout.
+        let resets = backend.snapshot().resets
+        let onlyDiagnostic = DiagnosticPeer(port: testPort, duration: 2)
+        wait({ onlyDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
+        precondition(!backend.snapshot().active && !backend.snapshot().microphone && backend.snapshot().resets == resets)
+        wait({ onlyDiagnostic.count("sample") >= 1 })
+        wait({ onlyDiagnostic.isClosed() && !backend.snapshot().diagnosing })
+        let samplesAfterStop = onlyDiagnostic.count("sample")
+        Thread.sleep(forTimeInterval: 1.1)
+        precondition(onlyDiagnostic.count("sample") == samplesAfterStop, "Expired diagnostics kept sampling")
+        onlyDiagnostic.cancel()
+        let stoppedDiagnostic = DiagnosticPeer(port: testPort, duration: 10)
+        wait({ stoppedDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
+        stoppedDiagnostic.stop(appendRestart: true)
+        wait({ stoppedDiagnostic.isClosed() && !backend.snapshot().diagnosing })
+        precondition(stoppedDiagnostic.count("started") == 1, "Frames after stop restarted an orphan recorder")
+
+        // The actual controller session collects both ends and clock bounds,
+        // then times out. No manual test-only client substitutes its lifecycle.
+        var finalDiagnostic: LagReport?
+        let actualDiagnostic = LagSession(host: "127.0.0.1", scope: .both, pid: getpid(), port: testPort, duration: 3) { report, active, _ in
+            if !active { finalDiagnostic = report }
+        }
+        actualDiagnostic.start()
+        let diagnosticDeadline = Date().addingTimeInterval(6)
+        while finalDiagnostic == nil && Date() < diagnosticDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        precondition(finalDiagnostic != nil, "Actual controller failed to stop")
+        precondition(!finalDiagnostic!.local.isEmpty && !finalDiagnostic!.remote.isEmpty && !finalDiagnostic!.clocks.isEmpty)
+        wait({ !backend.snapshot().diagnosing })
+        precondition(!backend.snapshot().active && !backend.snapshot().microphone)
         let client = AudioTransport() // Actual committed ScreenSharingEnhancer code, not a substitute.
         let welcomed = DispatchSemaphore(value: 0)
         let heard = Counter()
@@ -113,6 +192,18 @@ final class Counter: @unchecked Sendable {
         client.connect(host: "127.0.0.1", port: testPort)
         precondition(welcomed.wait(timeout: .now() + 5) == .success)
         wait({ heard.count() >= 25 })
+        // A malformed diagnostic and a valid parallel session must not claim
+        // or reset the existing audio slot. Cancel releases diagnostic ownership.
+        let invalidDiagnostic = DiagnosticPeer(port: testPort, malformed: true)
+        wait({ invalidDiagnostic.isClosed() }); invalidDiagnostic.cancel()
+        let parallelDiagnostic = DiagnosticPeer(port: testPort, duration: 10)
+        wait({ parallelDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
+        let beforeDiagnostic = heard.count()
+        wait({ heard.count() >= beforeDiagnostic + 15 && parallelDiagnostic.count("sample") >= 1 })
+        precondition(backend.snapshot().active)
+        parallelDiagnostic.cancel()
+        wait({ !backend.snapshot().diagnosing })
+        precondition(backend.snapshot().active, "Diagnostic disconnect stopped audio")
         precondition(!backend.snapshot().microphone, "Microphone must default off")
         client.sendMicrophone(true)
         for _ in 0..<3 { client.sendPCM(backend.uplink) }
