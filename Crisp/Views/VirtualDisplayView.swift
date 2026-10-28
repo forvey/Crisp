@@ -17,6 +17,11 @@ struct VirtualDisplayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            Text("Only one virtual display can be active. Activating another turns the current one off.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             if service.configs.isEmpty && !showCreateForm {
                 // Centered empty-state idiom, not an orphaned indented row (docs/DESIGN.md).
                 Text("No virtual displays yet")
@@ -59,7 +64,7 @@ struct VirtualDisplayView: View {
                 }
             }
 
-            if let err = createError {
+            if let err = createError ?? service.lastError {
                 Text(err)
                     .font(.caption)
                     .foregroundColor(.red)
@@ -104,6 +109,7 @@ struct VirtualDisplayView: View {
                 .transition(.opacity)
             }
         }
+        .disabled(service.isSwitching)
         .alert("Confirm Deletion", isPresented: Binding(
             get: { configToDelete != nil },
             set: { if !$0 { configToDelete = nil } }
@@ -140,14 +146,14 @@ struct VirtualDisplayView: View {
 
     /// Re-creates the live CGVirtualDisplay for a config that is off.
     private func handleActivate(_ config: VirtualDisplayService.VirtualDisplayConfig) {
-        guard activatingID == nil else { return }
+        guard activatingID == nil, !service.isSwitching else { return }
         activatingID = config.id
         createError = nil
         Task { @MainActor in
             let ok = await service.create(config: config)
             activatingID = nil
             if !ok {
-                createError = String(localized: "Failed to activate virtual display. Please try again.")
+                createError = service.lastError ?? String(localized: "Failed to activate virtual display. Please try again.")
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     createError = nil
@@ -157,7 +163,7 @@ struct VirtualDisplayView: View {
     }
 
     private func handleEdit(_ config: VirtualDisplayService.VirtualDisplayConfig) {
-        guard !isSavingEdit else { return }
+        guard !isSavingEdit, !service.isSwitching else { return }
         isSavingEdit = true
         createError = nil
         Task { @MainActor in
@@ -166,7 +172,7 @@ struct VirtualDisplayView: View {
             if ok {
                 withAnimation(.panelResize) { editingID = nil }
             } else {
-                createError = String(localized: "Failed to update virtual display. Please try again.")
+                createError = service.lastError ?? String(localized: "Failed to update virtual display. Please try again.")
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     createError = nil
@@ -176,6 +182,7 @@ struct VirtualDisplayView: View {
     }
 
     private func handleCreate(_ config: VirtualDisplayService.VirtualDisplayConfig) {
+        guard !isCreating, !service.isSwitching else { return }
         isCreating = true
         createError = nil
         Task { @MainActor in
@@ -184,7 +191,7 @@ struct VirtualDisplayView: View {
             if success {
                 withAnimation(.panelResize) { showCreateForm = false }
             } else {
-                createError = String(localized: "Failed to create virtual display. Please try again.")
+                createError = service.lastError ?? String(localized: "Failed to create virtual display. Please try again.")
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     createError = nil
@@ -215,7 +222,8 @@ struct VirtualDisplayRow: View {
                 Text(config.name)
                     .font(.body)
                     .lineLimit(1)
-                Text(verbatim: "\(config.width)×\(config.height)")
+                Text(verbatim: "\(config.desktopMode.width)×\(config.desktopMode.height)"
+                     + (config.desktopMode.hiDPI ? " HiDPI" : ""))
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -316,6 +324,8 @@ struct CreateVirtualDisplayForm: View {
     @State private var customWidth: String
     @State private var customHeight: String
     @State private var autoCreate: Bool
+    @State private var hiDPI: Bool
+    @State private var refreshRate: Double
 
     static let presetOptions: [(label: String, width: Int, height: Int)] = [
         ("1920×1080 (FHD)", 1920, 1080),
@@ -342,13 +352,15 @@ struct CreateVirtualDisplayForm: View {
         self.onConfirm = onConfirm
         _name = State(initialValue: editing?.name ?? String(localized: "Virtual Display"))
         _autoCreate = State(initialValue: editing?.autoCreate ?? true)
+        _hiDPI = State(initialValue: editing?.desktopMode.hiDPI ?? true)
+        _refreshRate = State(initialValue: editing?.refreshRate ?? 60)
         // A non-preset size selects "Custom" and prefills width/height.
         let presetIdx = editing.flatMap { e in
-            Self.presetOptions.firstIndex(where: { $0.width == e.width && $0.height == e.height })
+            Self.presetOptions.firstIndex(where: { $0.width == e.desktopMode.width && $0.height == e.desktopMode.height })
         }
         _selectedPreset = State(initialValue: presetIdx ?? (editing == nil ? 0 : Self.presetOptions.count))
-        _customWidth = State(initialValue: presetIdx == nil ? (editing.map { String($0.width) } ?? "") : "")
-        _customHeight = State(initialValue: presetIdx == nil ? (editing.map { String($0.height) } ?? "") : "")
+        _customWidth = State(initialValue: presetIdx == nil ? (editing.map { String($0.desktopMode.width) } ?? "") : "")
+        _customHeight = State(initialValue: presetIdx == nil ? (editing.map { String($0.desktopMode.height) } ?? "") : "")
     }
 
     var body: some View {
@@ -376,7 +388,7 @@ struct CreateVirtualDisplayForm: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Resolution")
+                Text("Desktop Resolution")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Picker("", selection: $selectedPreset) {
@@ -403,6 +415,30 @@ struct CreateVirtualDisplayForm: View {
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
+                CaptureToggleRow(icon: "textformat.size", color: .blue,
+                                 label: "HiDPI", isOn: $hiDPI)
+                Text("HiDPI keeps the same desktop space and renders text with more detail.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let size = selectedMode?.renderSize {
+                    HStack {
+                        Text("Rendering Pixels")
+                        Spacer()
+                        Text(verbatim: "\(size.width)×\(size.height)")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                } else if resolution != nil {
+                    Text("The HiDPI render size is too large. Reduce the desktop resolution.")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+                Picker("Refresh Rate", selection: $refreshRate) {
+                    ForEach(refreshRateOptions, id: \.self) { rate in
+                        Text(verbatim: "\(rate.formatted()) Hz").tag(rate)
+                    }
+                }
                 CaptureToggleRow(icon: "bolt.fill", color: .green,
                                  label: "Create at launch", isOn: $autoCreate)
             }
@@ -421,7 +457,7 @@ struct CreateVirtualDisplayForm: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isCreating || resolution == nil)
+                    .disabled(isCreating || selectedMode == nil)
             }
         }
         .padding(12)
@@ -445,13 +481,23 @@ struct CreateVirtualDisplayForm: View {
     /// The chosen resolution: a preset, or the validated custom width×height.
     /// Nil disables the confirm button.
     private var resolution: (width: Int, height: Int)? {
-        if selectedPreset < presets.count {
+        if presets.indices.contains(selectedPreset) {
             let p = presets[selectedPreset]
             return (p.width, p.height)
         }
         guard let w = Int(customWidth), let h = Int(customHeight),
               (640...8192).contains(w), (480...8192).contains(h) else { return nil }
         return (w, h)
+    }
+
+    private var selectedMode: VirtualDisplayDesktopMode? {
+        guard let res = resolution else { return nil }
+        let mode = VirtualDisplayDesktopMode(width: res.width, height: res.height, hiDPI: hiDPI)
+        return mode.renderSize == nil ? nil : mode
+    }
+
+    private var refreshRateOptions: [Double] {
+        Array(Set([50.0, 60.0, 75.0, refreshRate])).sorted()
     }
 
     private func customField(text: Binding<String>, placeholder: String) -> some View {
@@ -473,16 +519,14 @@ struct CreateVirtualDisplayForm: View {
     }
 
     private func confirm() {
-        guard !isCreating, let res = resolution else { return }
-        let config = VirtualDisplayService.VirtualDisplayConfig(
+        guard !isCreating, let mode = selectedMode,
+              let config = VirtualDisplayService.VirtualDisplayConfig(
             id: editing?.id ?? UUID(),
             name: name.isEmpty ? String(localized: "Virtual Display") : name,
-            width: res.width,
-            height: res.height,
-            refreshRate: editing?.refreshRate ?? 60,
-            hiDPI: true,
+            desktopMode: mode,
+            refreshRate: refreshRate,
             autoCreate: autoCreate
-        )
+        ) else { return }
         onConfirm(config)
     }
 }

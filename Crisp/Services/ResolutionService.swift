@@ -215,9 +215,12 @@ final class ResolutionService: @unchecked Sendable {
     nonisolated static func applyModeSync(
         _ cgMode: CGDisplayMode,
         on displayID: CGDirectDisplayID,
-        scope: CGConfigureOption = .forSession
+        scope: CGConfigureOption = .forSession,
+        didComplete: (@Sendable () -> Void)? = nil
     ) async -> Bool {
         await CGHelpers.runWithTimeout(seconds: 10, fallback: false) {
+            // Completion follows the actual IPC, even when the wrapper has timed out.
+            defer { didComplete?() }
             var config: CGDisplayConfigRef?
             guard CGBeginDisplayConfiguration(&config) == .success,
                   let cfg = config else {

@@ -27,6 +27,12 @@ Available in English, 简体中文 and 繁體中文.
 
 https://github.com/user-attachments/assets/90a62808-84d2-40d6-8563-0b282b9b4b6d
 
+## This fork
+
+This fork adds exclusive virtual-display switching, explicit desktop resolution/HiDPI preferences with mode restoration, and an optional remote audio service paired with [ScreenSharingEnhancer](https://github.com/forvey/ScreenSharingEnhancer). The virtual input device is named **远程麦克风**.
+
+Crisp runs on the controlled Mac; ScreenSharingEnhancer runs on the MacBook client. For these additions, build this fork and follow the [remote audio setup](docs/remote-audio.md), [display implementation notes](docs/display-notes.md), and [validation record](docs/remote-audio-validation.md).
+
 ## Install
 
 ```sh

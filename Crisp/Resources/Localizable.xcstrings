@@ -1,6 +1,550 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Speaker": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扬声器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "揚聲器"
+          }
+        }
+      }
+    },
+    "Microphone On": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "麦克风已开启"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "麥克風已開啟"
+          }
+        }
+      }
+    },
+    "Connected · Microphone On": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接 · 麦克风开启"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已連線 · 麥克風開啟"
+          }
+        }
+      }
+    },
+    "Waiting for Connection": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待主控端连接"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待主控端連線"
+          }
+        }
+      }
+    },
+    "Remote Audio": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程音频"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "遠端音訊"
+          }
+        }
+      }
+    },
+    "Remote Audio…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程音频…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "遠端音訊…"
+          }
+        }
+      }
+    },
+    "Enable Audio Service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用音频服务"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "啟用音訊服務"
+          }
+        }
+      }
+    },
+    "Plain TCP, unencrypted. Enable only when you want to share audio.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通 TCP，不加密。需要共享音频时再开启。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一般 TCP，不加密。需要共享音訊時再開啟。"
+          }
+        }
+      }
+    },
+    "Connected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已連線"
+          }
+        }
+      }
+    },
+    "Not Connected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未连接"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未連線"
+          }
+        }
+      }
+    },
+    "Remote Microphone": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程麦克风"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "遠端麥克風"
+          }
+        }
+      }
+    },
+    "Virtual microphone is available.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "虚拟麦克风可用。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "虛擬麥克風可用。"
+          }
+        }
+      }
+    },
+    "Virtual microphone is not installed or loaded.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "虚拟麦克风未安装或尚未加载。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "虛擬麥克風未安裝或尚未載入。"
+          }
+        }
+      }
+    },
+    "Install Component": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装组件"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安裝元件"
+          }
+        }
+      }
+    },
+    "Uninstall Component": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载组件"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除元件"
+          }
+        }
+      }
+    },
+    "Refresh": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新整理"
+          }
+        }
+      }
+    },
+    "Select 远程麦克风 in WeCom. Headphones stay connected to the MacBook.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在企业微信中选择 远程麦克风，耳机连接 MacBook。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在企業微信中選擇 远程麦克风，耳機連接 MacBook。"
+          }
+        }
+      }
+    },
+    "System audio permission is requested on the first connection. No audio is recorded to disk.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "首次连接时申请系统音频权限，不会将音频保存到磁盘。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "首次連線時申請系統音訊權限，不會將音訊儲存至磁碟。"
+          }
+        }
+      }
+    },
+    "Audio Service Error": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音频服务错误"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音訊服務錯誤"
+          }
+        }
+      }
+    },
+    "Remote audio requires macOS 14.2 or later.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程音频需要 macOS 14.2 或更新系统。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "遠端音訊需要 macOS 14.2 或更新系統。"
+          }
+        }
+      }
+    },
+    "The audio component package is missing. Install a complete Crisp build.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缺少音频组件安装包，请安装完整的 Crisp 构建。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缺少音訊元件安裝套件，請安裝完整的 Crisp 版本。"
+          }
+        }
+      }
+    },
+    "Listening needs no component. Install only to use the MacBook microphone in WeCom.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅收听无需组件。只有在企业微信中使用 MacBook 麦克风时才需安装。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "僅收聽無需元件。只有在企業微信中使用 MacBook 麥克風時才需安裝。"
+          }
+        }
+      }
+    },
+    "Manage Virtual Microphone": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理虚拟麦克风"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理虛擬麥克風"
+          }
+        }
+      }
+    },
+    "Installing or removing the component restarts CoreAudio and requires administrator approval.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装或卸载组件需要管理员批准，会重启 CoreAudio 并短暂中断本机音频。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安裝或移除元件需要管理員核准，會重新啟動 CoreAudio 並短暫中斷本機音訊。"
+          }
+        }
+      }
+    },
+    "Continue": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "繼續"
+          }
+        }
+      }
+    },
+    "Desktop Resolution": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "桌面分辨率"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "桌面解析度"
+          }
+        }
+      }
+    },
+    "Rendering Pixels": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "渲染像素"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "算繪像素"
+          }
+        }
+      }
+    },
+    "HiDPI keeps the same desktop space and renders text with more detail.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HiDPI 保持桌面空间不变，让文字显示更细腻。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HiDPI 保持桌面空間不變，讓文字顯示更細緻。"
+          }
+        }
+      }
+    },
+    "The HiDPI render size is too large. Reduce the desktop resolution.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HiDPI 渲染尺寸过大，请减小桌面分辨率。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HiDPI 算繪尺寸過大，請降低桌面解析度。"
+          }
+        }
+      }
+    },
+    "Invalid virtual display size or refresh rate. Please edit this configuration.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "虚拟屏幕尺寸或刷新率无效，请编辑此配置。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "虛擬螢幕尺寸或更新頻率無效，請編輯此設定。"
+          }
+        }
+      }
+    },
+    "The display is active, but its saved mode could not be applied. Edit and save to retry.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "屏幕已启用，但未能应用保存的显示模式。请编辑并保存以重试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "螢幕已啟用，但未能套用儲存的顯示模式。請編輯並儲存以重試。"
+          }
+        }
+      }
+    },
+    "Only one virtual display can be active. Activating another turns the current one off.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同一时间只能启用一个虚拟屏幕，启用其他屏幕会自动停用当前屏幕。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同一時間只能啟用一個虛擬螢幕，啟用其他螢幕會自動停用目前螢幕。"
+          }
+        }
+      }
+    },
+    "The previous virtual display is still being released. Please try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一个虚拟屏幕尚未释放，请稍后重试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一個虛擬螢幕尚未釋放，請稍後重試。"
+          }
+        }
+      }
+    },
+    "Unable to verify that the previous virtual display has been released.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法确认上一个虚拟屏幕是否已释放，已停止切换。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法確認上一個虛擬螢幕是否已釋放，已停止切換。"
+          }
+        }
+      }
+    },
     "" : {
 
     },

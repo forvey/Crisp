@@ -108,6 +108,7 @@ LANGS=$(python3 "$ROOT/scripts/xcstrings-compile.py" Crisp/Resources/Localizable
 LOC_XML=""; for l in $LANGS; do LOC_XML="${LOC_XML}<string>${l}</string>"; done
 echo "    languages: $LANGS"
 
+bash "$ROOT/scripts/build-audio-component.sh" "$APP/Contents/Resources/RemoteAudio"
 echo "==> Writing Info.plist / PkgInfo…"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -130,6 +131,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>LSUIElement</key><true/>
 	<key>NSHumanReadableCopyright</key><string>Crisp - Free &amp; Open Source</string>
 	<key>NSAppleEventsUsageDescription</key><string>Crisp uses System Events to switch Dark Mode with the system's animated transition.</string>
+	<key>NSAudioCaptureUsageDescription</key><string>Crisp sends this Mac's application playback to your connected MacBook.</string>
+	<key>NSLocalNetworkUsageDescription</key><string>Crisp accepts your MacBook's remote audio connection on TCP port 49555.</string>
 	<key>SUFeedURL</key><string>https://crispmac.app/appcast.xml</string>
 	<key>SUPublicEDKey</key><string>3UT7wZoXDzrAhwCMVS3DoPt2lcya9H/cvlyXliuPuhM=</string>
 	<key>SUEnableAutomaticChecks</key><true/>

@@ -40,7 +40,63 @@ Delivers true HiDPI past WindowServer's scaled-backing cap (issue #65): on 5K2K 
 
 ## VirtualDisplayService.create
 
-`CGVirtualDisplay(descriptor:)` requires the main thread and returns nil off it, so descriptor build and init run on the main actor; only `apply(_:)`, which blocks on WindowServer IPC, runs off-main inside `CGHelpers.runWithTimeout`. The descriptor's `productID`/`serialNum` must be both unique per config (else a second virtual display collides with the first and WindowServer mirrors or rejects it) and stable across recreations, because macOS keys per-display settings, including the "what do you want to show" extend-or-mirror choice, on that identity; both halves are derived from the config's UUID so they never change. Size is computed from a fixed 110 PPI so each resolution reports a physical size like a real panel of that resolution, which makes macOS default to the native resolution instead of a scaled Retina mode (matching how BetterDisplay presents virtual displays); shrinking the reported size does not avoid the "what to show" prompt, since that prompt is gated on the display's reported type (HDMI/TV), not physical size, only on the default scaling. New-display registration pops that system picker, which steals key focus and would trip the panel's outside-click auto-dismiss, so `PanelOpenGuard.suppressAutoDismiss` is held for 1.5 s around creation. macOS auto-assigns a scaled looks-like-1080p default mode to any high-resolution virtual display no matter which modes are supplied, so `applyNativeResolution` retries briefly after creation until the native 1x mode (point size equals pixel size) sticks, or gives up.
+This fork uses exclusive activation for the virtual displays listed in the panel. Enabling
+one releases the current virtual display first, then polls the online display list for up
+to three seconds. Creation only starts once no Crisp virtual display remains online; an
+enumeration error or removal timeout stops the switch. This also covers a manual Deactivate
+immediately followed by Activate, and editing the active display's geometry. Other services'
+virtual helper displays and crash survivors are not forcibly destroyed: their presence
+blocks creation until they disappear. Physical displays and saved virtual-display geometry
+are left unchanged.
+
+`VirtualDisplayActivationGate` rejects overlapping requests and keeps creation blocked while
+a timed-out `apply` is still executing on its background thread. The timeout wrapper cannot
+cancel WindowServer IPC. The panel disables virtual-display controls during this interval.
+Launch restores only the first configuration marked `autoCreate` (list order), even if an
+older preferences file contains multiple such flags. A manual action during the launch delay
+takes precedence. This fork does not change the saved launch flags. Failed switches leave
+the configurations available for retry, without attempting
+another creation as an automatic rollback.
+
+Unit tests exercise the gate with simulated delayed removal, concurrent activation, late IPC
+completion, enumeration failures and cancellation. They do not exercise the private display
+API. Remote reconnection, live display-mode restoration and the reported machine freeze still
+need a controlled runtime test with a local recovery path available.
+
+### Desktop size and explicit HiDPI selection
+
+The create/edit form takes a **desktop resolution** and has an independent **HiDPI** switch
+plus a refresh-rate selector. Enabling HiDPI keeps that logical width/height and allocates a
+2x backing in each dimension; disabling it uses a 1x backing. The form previews the rendering
+pixels. This is the same rule for landscape, portrait, ultrawide and arbitrary custom sizes;
+there is no monitor-name, aspect-ratio or 6880-to-3440 special case. The existing 8192-pixel
+per-dimension input limit is applied to the calculated backing before any screen is released.
+
+`VirtualDisplayConfiguration` retains the existing `width`/`height` keys as backing pixels
+and adds an optional `preferredMode` containing logical width/height and the selected HiDPI
+state. Old records have no preference: their old `hiDPI: true` only advertised modes, so it
+must not be treated as evidence that the user selected HiDPI. They retain their existing
+native desktop size until explicitly edited and saved. The editor displays that native size
+with HiDPI off; the user chooses the intended desktop size and switch once. New records store
+both sizes so repeated saves, switches and restarts do not double them again. IDs, names and
+launch selections are preserved. The panel's row shows the configured desktop size and HiDPI
+selection rather than the backing size.
+
+After creating a screen, `VirtualDisplayModeRestorer` matches **both logical dimensions, both
+pixel dimensions and the requested refresh rate**, then requires two matching current-mode
+observations separated by a short settling wait. It never substitutes a same-size 1x mode or
+a different refresh rate. A failed/timed-out commit stops retries; the activation gate stays
+held until the real underlying IPC returns. If the screen was created but mode restoration
+failed, it remains reachable, its configuration is saved, and a persistent panel warning
+instructs the user to edit/save to retry. This does not claim that a remote viewer, including
+macOS Screen Sharing, has changed its own zoom setting or eliminated scroll bars.
+
+Configuration tests cover old JSON, repeated persistence, both switch states, arbitrary
+dimensions and invalid sizes. Mode-restoration tests cover delayed enumeration, asynchronous
+native overrides, unavailable HiDPI, incorrect density/refresh rate and false-positive commit
+results. These tests simulate mode state; they do not create real virtual displays.
+
+`CGVirtualDisplay(descriptor:)` requires the main thread and returns nil off it, so descriptor build and init run on the main actor; only `apply(_:)`, which blocks on WindowServer IPC, runs off-main inside `CGHelpers.runWithTimeout`. The descriptor's `productID`/`serialNum` must be both unique per config (else a second virtual display collides with the first and WindowServer mirrors or rejects it) and stable across recreations, because macOS keys per-display settings, including the "what do you want to show" extend-or-mirror choice, on that identity; both halves are derived from the config's UUID so they never change. Size is computed from a fixed 110 PPI. New-display registration pops that system picker, which steals key focus and would trip the panel's outside-click auto-dismiss, so `PanelOpenGuard.suppressAutoDismiss` is held for 1.5 s around creation. macOS can assign a default mode asynchronously; `applyPreferredMode` now restores and verifies the explicitly configured mode instead of unconditionally forcing native 1x.
 
 ## ResolutionService
 

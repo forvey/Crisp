@@ -705,6 +705,8 @@ struct SettingsView: View {
                 CommandLineToolRow()
             }
 
+            CrispRemoteAudioRow()
+
             SectionDivider()
 
             Text("Crisp v\(UpdateService.shared.currentVersion)")

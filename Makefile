@@ -41,7 +41,7 @@ SWIFTC_FLAGS := -O -swift-version 6 -parse-as-library \
                 -Xlinker -undefined -Xlinker dynamic_lookup
 
 .DEFAULT_GOAL := help
-.PHONY: help dev compile test lint loc-check typecheck-x86 check build dmg release clean vendor
+.PHONY: help dev compile test lint loc-check typecheck-x86 check build dmg release clean vendor audio-driver-test
 
 # Sparkle framework, pinned + cached in vendor/ (needed to compile and to
 # generate the Xcode project's framework reference).
@@ -104,7 +104,14 @@ typecheck-x86: vendor
 		-F vendor/Sparkle $(SWIFT_SOURCES)
 
 # Everything CI enforces (lint + build + tests + x86_64 slice + localization keys), locally.
-check: lint test typecheck-x86 loc-check
+audio-driver-test:
+	mkdir -p build/audio-evidence
+	xcrun clang -std=c11 -fblocks -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+		-framework CoreAudio -framework CoreFoundation AudioDriver/CrispRemoteMicrophone.c \
+		Tests/RemoteAudio/AudioDriverTests.c -o build/audio-evidence/driver-tests
+	build/audio-evidence/driver-tests
+
+check: lint test typecheck-x86 loc-check audio-driver-test
 	@echo "check passed: lint clean, tests green, x86_64 slice typechecks, localization keys complete"
 
 build:

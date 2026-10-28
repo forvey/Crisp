@@ -50,10 +50,20 @@ echo "==> Compiling Crisp $VERSION ($BUILD)..."
     Crisp/Views/*.swift Crisp/Utilities/*.swift \
     -o Crisp-bin
 
+bash scripts/build-audio-component.sh "$ROOT/build/RemoteAudio"
 echo "==> Swapping into ${APP}..."
 pkill -x Crisp 2>/dev/null || true
 sleep 1
 cp Crisp-bin "$APP/Contents/MacOS/Crisp"
+ditto "$ROOT/build/RemoteAudio" "$APP/Contents/Resources/RemoteAudio"
+python3 - "$APP/Contents/Info.plist" <<'PY'
+import plistlib,sys
+path=sys.argv[1]
+with open(path,'rb') as file: info=plistlib.load(file)
+info['NSAudioCaptureUsageDescription']="Crisp sends this Mac's application playback to your connected MacBook."
+info['NSLocalNetworkUsageDescription']="Crisp accepts your MacBook's remote audio connection on TCP port 49555."
+with open(path,'wb') as file: plistlib.dump(info,file)
+PY
 if [ -n "$AI_DEV" ]; then
     echo "==> Writing Shortcuts actions metadata..."
     appintents_metadata "$APP/Contents/MacOS/Crisp" "$APP/Contents/Resources" arm64

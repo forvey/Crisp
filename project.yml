@@ -15,6 +15,11 @@ targets:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
+    info:
+      path: build/Crisp-Info.plist
+      properties:
+        NSAudioCaptureUsageDescription: "Crisp sends this Mac's application playback to your connected MacBook."
+        NSLocalNetworkUsageDescription: "Crisp accepts your MacBook's remote audio connection on TCP port 49555."
     sources:
       - path: Crisp
         excludes:
@@ -49,6 +54,10 @@ targets:
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    postBuildScripts:
+      - name: Bundle remote audio component
+        script: bash "$SRCROOT/scripts/build-audio-component.sh" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/RemoteAudio"
+        basedOnDependencyAnalysis: false
   crispctl:
     type: tool
     platform: macOS
@@ -72,6 +81,12 @@ targets:
       - path: Crisp/Models/DDCServiceMatcher.swift
       - path: Crisp/Models/DDCOperationQueuePool.swift
       - path: Crisp/Models/DisplayConnectionQueue.swift
+      - path: Crisp/Models/VirtualDisplayActivationGate.swift
+      - path: Crisp/Models/VirtualDisplayConfiguration.swift
+      - path: Crisp/Models/VirtualDisplayModeRestorer.swift
+      - path: Crisp/Models/CrispAudioWire.swift
+      - path: Crisp/Models/CrispAudioResampler.swift
+      - path: Crisp/Services/CrispAudioServer.swift
       - path: Crisp/Models/DDCOperationGeneration.swift
       - path: Crisp/Models/DDCTopologyChange.swift
       - path: Crisp/Models/RefreshRateFormat.swift

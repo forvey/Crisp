@@ -11,6 +11,7 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#include "../AudioShared/CrispAudioShared.h"
 
 // MARK: - CGVirtualDisplay Private API (macOS 14+)
 

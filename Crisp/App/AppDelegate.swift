@@ -256,6 +256,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        CrispRemoteAudioService.shared.shutdown()
         controlServer.stop()
         for obs in wakeObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
