@@ -3,6 +3,10 @@
 软件验证：2026-10-27；系统安装验证：2026-10-28。环境：mini，macOS 27.0（26A425），arm64，Xcode 27.1。
 本次交付包含此前的虚拟屏互斥、HiDPI 和分辨率恢复改动；具体提交以 Git 记录为准。
 
+后续按用户要求，已从 Makefile 和 CI 移除独立的 Intel/x86_64 类型检查。下文该项检查
+为较早交付时的历史执行记录；它从未在已安装 Crisp 的日常运行中执行。本次调整不涉及
+应用运行代码、虚拟屏或音频配置。
+
 ## 2026-10-28 源码交付前检查
 
 - Crisp `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer make -o vendor check` 通过：

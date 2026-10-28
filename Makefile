@@ -4,7 +4,7 @@
 #   make dev        compile, swap the binary into /Applications/Crisp.app, relaunch
 #   make compile    compile the binary only (./Crisp-bin), no swap — quick build check
 #   make test       generate the Xcode project and run unit tests
-#   make check      lint + tests + x86_64 typecheck + localization keys, everything CI enforces: run before pushing
+#   make check      lint + tests + localization keys + audio driver checks: run before pushing
 #                   (auto-run on every push after: git config core.hooksPath .githooks)
 #
 # Distributable DMG:
@@ -41,7 +41,7 @@ SWIFTC_FLAGS := -O -swift-version 6 -parse-as-library \
                 -Xlinker -undefined -Xlinker dynamic_lookup
 
 .DEFAULT_GOAL := help
-.PHONY: help dev compile test lint loc-check typecheck-x86 check build dmg release clean vendor audio-driver-test
+.PHONY: help dev compile test lint loc-check check build dmg release clean vendor audio-driver-test
 
 # Sparkle framework, pinned + cached in vendor/ (needed to compile and to
 # generate the Xcode project's framework reference).
@@ -53,7 +53,7 @@ help:
 	@echo "  make dev        compile + swap into /Applications/Crisp.app + relaunch (dev.sh)"
 	@echo "  make compile    compile ./Crisp-bin only, no swap (quick build check)"
 	@echo "  make test       generate the Xcode project and run unit tests"
-	@echo "  make check      lint + tests + x86_64 typecheck + localization keys, everything CI enforces"
+	@echo "  make check      lint + tests + localization keys + audio driver checks"
 	@echo "  make build      signed universal DMG, needs Xcode (scripts/release.sh v$(VERSION))"
 	@echo "  make dmg        DMG via Xcode (scripts/build-dmg.sh)"
 	@echo "  make release ARGS=\"vX.Y.Z notes.md --publish\"   full release (scripts/release.sh)"
@@ -94,16 +94,7 @@ loc-check: vendor
 	python3 scripts/check-localization-keys.py build/loc/en.xcloc \
 		Crisp/Resources/Localizable.xcstrings scripts/i18n-missing-allowlist.txt
 
-# The release binary is universal, and code that only compiles on arm64 (an
-# `#if arch(arm64)` block that a caller outside it depends on, which is how #110
-# first failed the hook) breaks the x86_64 slice. Typechecking that slice takes
-# seconds where the universal build takes minutes, so it runs on every check.
-typecheck-x86: vendor
-	swiftc -typecheck -target x86_64-apple-macos14.0 -swift-version 6 \
-		-parse-as-library -import-objc-header Crisp/Crisp-Bridging-Header.h \
-		-F vendor/Sparkle $(SWIFT_SOURCES)
-
-# Everything CI enforces (lint + build + tests + x86_64 slice + localization keys), locally.
+# Exercise the virtual input driver without installing it or opening audio devices.
 audio-driver-test:
 	mkdir -p build/audio-evidence
 	xcrun clang -std=c11 -fblocks -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
@@ -111,8 +102,8 @@ audio-driver-test:
 		Tests/RemoteAudio/AudioDriverTests.c -o build/audio-evidence/driver-tests
 	build/audio-evidence/driver-tests
 
-check: lint test typecheck-x86 loc-check audio-driver-test
-	@echo "check passed: lint clean, tests green, x86_64 slice typechecks, localization keys complete"
+check: lint test loc-check audio-driver-test
+	@echo "check passed: lint clean, tests green, localization keys complete, audio driver checks passed"
 
 build:
 	./scripts/release.sh v$(VERSION)

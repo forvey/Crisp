@@ -55,9 +55,9 @@ With full Xcode, `xcodegen generate && xcodebuild -scheme crispctl -configuratio
 
 ## Before opening a PR
 
-Run `make check`: it runs SwiftLint (strict), the unit tests, the x86_64
-typecheck, and the localization key check, the same checks CI enforces, so
-failures surface locally instead of on the PR. It needs full Xcode plus
+Run `make check`: it runs SwiftLint (strict), the unit tests, the localization
+key check, and the audio driver fake-host tests. There is no separate Intel
+typecheck in the local checks or CI. It needs full Xcode plus
 `swiftlint` and `xcodegen` (`brew install swiftlint xcodegen`). To run it
 automatically on every push, opt in once:
 

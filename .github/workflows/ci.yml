@@ -46,12 +46,6 @@ jobs:
       # survived to a release.
       - name: Test
         run: make test
-      # The release binary is universal. Code that only compiles on arm64 (an
-      # `#if arch(arm64)` block a caller outside it depends on, how #110 first
-      # failed) breaks the x86_64 slice, and typechecking that slice takes
-      # seconds where the universal build in the job below takes minutes.
-      - name: Typecheck the x86_64 slice
-        run: make typecheck-x86
       # Every localization key the code uses must exist in the String Catalog.
       # SwiftUI coalesces interpolated text into "%@"-style lookup keys, and a
       # key missing from the catalog silently falls back to English at runtime
