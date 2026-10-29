@@ -6,18 +6,31 @@ import Darwin
 final class SyntheticAudio: CrispAudioBackend, @unchecked Sendable {
     struct Snapshot { let active: Bool; let microphone: Bool; let received: Int; let resets: Int; let diagnosing: Bool }
     var onFailure: @Sendable (String) -> Void = { _ in }
+    var onMicrophoneUse: @Sendable (CrispAudioWire.MicrophoneUse) -> Void = { _ in }
     private let lock = NSLock()
     private var enabled = false
     private var active = false
     private var received = 0
     private var resetCount = 0
     private var microphoneAvailable = true
+    private var inputInUse = false
     private var diagnosing = false
     func setDiagnostics(_ recorder: LagRecorder?) { lock.lock(); diagnosing = recorder != nil; lock.unlock() }
     let downlink = CrispAudioPCM.bytes((0..<480).map { sin(Float($0) * 0.05) * 0.1 })
     let uplink = Data(repeating: 17, count: 960)
     func validate() throws {}
-    func start() throws { lock.lock(); active = true; enabled = false; lock.unlock() }
+    func start() throws {
+        lock.lock(); active = true; enabled = false
+        let use: CrispAudioWire.MicrophoneUse = microphoneAvailable ? (inputInUse ? .inUse : .idle) : .unavailable
+        lock.unlock()
+        onMicrophoneUse(use)
+    }
+    func setInputInUse(_ inUse: Bool) {
+        lock.lock(); inputInUse = inUse
+        let use: CrispAudioWire.MicrophoneUse = microphoneAvailable ? (inUse ? .inUse : .idle) : .unavailable
+        lock.unlock()
+        onMicrophoneUse(use)
+    }
     func stop() { lock.lock(); active = false; enabled = false; lock.unlock() }
     func setMicrophone(_ on: Bool) throws {
         lock.lock(); defer { lock.unlock() }
@@ -213,7 +226,9 @@ final class Counter: @unchecked Sendable {
         let client = AudioTransport() // Actual committed ScreenSharingEnhancer code, not a substitute.
         let welcomed = DispatchSemaphore(value: 0)
         let heard = Counter()
+        let use = Counter()
         client.onReady = { welcomed.signal() }
+        client.onMicrophoneUse = { _ in use.increment() }
         client.onPCM = { bytes in precondition(bytes == backend.downlink); heard.increment() }
         client.connect(host: "127.0.0.1", port: testPort)
         precondition(welcomed.wait(timeout: .now() + 5) == .success)
@@ -232,8 +247,26 @@ final class Counter: @unchecked Sendable {
         precondition(backend.snapshot().active, "Diagnostic disconnect stopped audio")
         precondition(!backend.snapshot().microphone, "Microphone must default off")
         client.sendMicrophone(true)
+        let beforeIdle = backend.snapshot().received
+        client.sendPCM(backend.uplink)
+        Thread.sleep(forTimeInterval: 0.3)
+        precondition(!backend.snapshot().microphone && backend.snapshot().received == beforeIdle,
+                     "Permission alone started idle microphone transmission")
+        let useBefore = use.count()
+        backend.setInputInUse(true)
+        wait({ use.count() > useBefore && backend.snapshot().microphone })
         for _ in 0..<3 { client.sendPCM(backend.uplink) }
-        wait({ backend.snapshot().received == 3 })
+        wait({ backend.snapshot().received == beforeIdle + 3 })
+        let useActive = use.count()
+        backend.setInputInUse(false)
+        wait({ use.count() > useActive && !backend.snapshot().microphone })
+        let stoppedAt = backend.snapshot().received
+        client.sendPCM(backend.uplink)
+        Thread.sleep(forTimeInterval: 0.3)
+        precondition(backend.snapshot().received == stoppedAt, "Last reader stopped but audio was still delivered")
+        let useIdle = use.count()
+        backend.setInputInUse(true)
+        wait({ use.count() > useIdle && backend.snapshot().microphone })
         let steadyInput = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "SteadySyntheticMicrophone"))
         steadyInput.schedule(deadline: .now(), repeating: .milliseconds(20))
         steadyInput.setEventHandler { client.sendPCM(backend.uplink) }
@@ -261,11 +294,14 @@ final class Counter: @unchecked Sendable {
 
         let reconnect = AudioTransport()
         let reconnected = DispatchSemaphore(value: 0)
+        let reconnectUse = DispatchSemaphore(value: 0)
         let received = Counter()
         reconnect.onReady = { reconnected.signal() }
+        reconnect.onMicrophoneUse = { value in if value == .inUse { reconnectUse.signal() } }
         reconnect.onPCM = { bytes in precondition(bytes == backend.downlink); received.increment() }
         reconnect.connect(host: "127.0.0.1", port: testPort)
         precondition(reconnected.wait(timeout: .now() + 5) == .success)
+        precondition(reconnectUse.wait(timeout: .now() + 5) == .success)
         precondition(!backend.snapshot().microphone, "Reconnect resumed the previous microphone state")
         reconnect.sendMicrophone(true)
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "SyntheticMicrophone"))
@@ -287,29 +323,67 @@ final class Counter: @unchecked Sendable {
         let cpuAfter = Double(after.ru_utime.tv_sec + after.ru_stime.tv_sec)
             + Double(after.ru_utime.tv_usec + after.ru_stime.tv_usec) / 1e6
 
-        // Missing virtual input must not block listening. Injection must fail
-        // explicitly when the user actually requests the microphone route.
+        // Missing/old input reports unavailable. Even an allowed microphone
+        // stays closed, while the independent speaker connection keeps working.
         backend.setMicrophoneAvailable(false)
         let listenOnly = AudioTransport()
         let listenReady = DispatchSemaphore(value: 0)
-        let micRejected = DispatchSemaphore(value: 0)
+        let micUnavailable = DispatchSemaphore(value: 0)
         let listenPackets = Counter()
         listenOnly.onReady = { listenReady.signal() }
         listenOnly.onPCM = { _ in listenPackets.increment() }
-        listenOnly.onFailure = { _ in micRejected.signal() }
+        listenOnly.onFailure = { reason in preconditionFailure(reason) }
+        listenOnly.onMicrophoneUse = { value in if value == .unavailable { micUnavailable.signal() } }
         listenOnly.connect(host: "127.0.0.1", port: testPort)
         precondition(listenReady.wait(timeout: .now() + 5) == .success)
         wait({ listenPackets.count() >= 10 })
         precondition(!backend.snapshot().microphone)
         let beforeMissingMic = backend.snapshot().received
         listenOnly.sendMicrophone(true)
-        precondition(micRejected.wait(timeout: .now() + 5) == .success)
-        wait({ !backend.snapshot().active })
-        precondition(backend.snapshot().received == beforeMissingMic && !backend.snapshot().microphone)
+        precondition(micUnavailable.wait(timeout: .now() + 5) == .success)
+        listenOnly.sendPCM(backend.uplink)
+        let heardBefore = listenPackets.count()
+        wait({ listenPackets.count() >= heardBefore + 10 })
+        precondition(backend.snapshot().active && backend.snapshot().received == beforeMissingMic && !backend.snapshot().microphone)
         listenOnly.disconnect()
+        wait({ !backend.snapshot().active })
         backend.setMicrophoneAvailable(true)
 
+        // Explicit self-test uses the production server/transport. Generated
+        // frames replace downlink only during the requested speaker stage;
+        // a busy virtual input must reject the microphone stage, not hijack it.
+        backend.setInputInUse(true)
+        let probeClient = AudioTransport()
+        let probeReady = DispatchSemaphore(value: 0)
+        let probeStarted = DispatchSemaphore(value: 0)
+        let probeStopped = DispatchSemaphore(value: 0)
+        let probeRejected = DispatchSemaphore(value: 0)
+        let probePackets = Counter()
+        let expectedProbe = Set((0..<64).map { AudioProbeSignal.pcm($0) })
+        probeClient.onReady = { probeReady.signal() }
+        probeClient.onPCM = { if expectedProbe.contains($0) { probePackets.increment() } }
+        probeClient.onProbeReply = { data in
+            let reply = try! JSONDecoder().decode(AudioProbeReply.self, from: data)
+            if reply.state == "ready" { probeStarted.signal() }
+            if reply.state == "result" { probeStopped.signal() }
+            if reply.state == "error" { probeRejected.signal() }
+        }
+        probeClient.connect(host: "127.0.0.1", port: testPort)
+        precondition(probeReady.wait(timeout: .now() + 5) == .success)
+        probeClient.probe(1)
+        precondition(probeStarted.wait(timeout: .now() + 5) == .success)
+        wait({ probePackets.count() >= 10 })
+        probeClient.probe(0)
+        precondition(probeStopped.wait(timeout: .now() + 5) == .success)
+        probeClient.probe(2)
+        precondition(probeRejected.wait(timeout: .now() + 5) == .success)
+        precondition(!backend.snapshot().microphone)
+        probeClient.disconnect()
+        wait({ !backend.snapshot().active })
+
         malformed(CrispAudioWire.encode(.pcm(CrispAudioWire.silence)))
+        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.probe(3)))
+        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.probeReply(Data("{}".utf8))))
         malformed(Data([0, 0, 4, 1]))
         malformed(Data([0, 0, 0, 5, 1]) + Data("bad!".utf8))
         malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.hello))

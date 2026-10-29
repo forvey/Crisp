@@ -12,6 +12,7 @@
 #define CRISP_MIC_CONTROL ((uint32_t)0x636d6374)
 #define CRISP_MIC_WRITE ((uint32_t)0x636d7772)
 #define CRISP_MIC_STATUS ((uint32_t)0x636d7374)
+#define CRISP_MIC_USAGE ((uint32_t)0x636d7573)
 #define CRISP_MIC_VERSION 1
 #define CRISP_MIC_RATE 48000
 #define CRISP_MIC_PACKET_FRAMES 960
@@ -19,6 +20,7 @@
 #define CRISP_MIC_NAME "远程麦克风"
 
 typedef struct { uint32_t version, enabled; uint64_t generation; } CrispMicControl;
+typedef struct { uint32_t version, running; } CrispMicUsage;
 typedef struct {
     uint32_t version, frames;
     uint64_t generation;

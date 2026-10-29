@@ -4,6 +4,7 @@
 #include <CoreFoundation/CFPlugInCOM.h>
 #include <stdatomic.h>
 #include <math.h>
+#include <dispatch/dispatch.h>
 #include "../AudioShared/CrispAudioShared.h"
 
 enum { Device = 2, Input = 3 };
@@ -22,6 +23,28 @@ static double cachedTime;
 static UInt32 cachedFrames;
 static bool cacheValid = false;
 static _Atomic bool streamActive = true;
+static AudioServerPlugInHostRef pluginHost;
+
+// Only StartIO/StopIO call this, never the real-time sample callback. Notify
+// asynchronously so querying the new property cannot re-enter StartIO/StopIO.
+static void usageChanged(void) {
+    AudioServerPlugInHostRef host = pluginHost;
+    if (!host || !host->PropertiesChanged) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        AudioObjectPropertyAddress addresses[] = {
+            {CRISP_MIC_USAGE, kAudioObjectPropertyScopeGlobal, 0},
+            {kAudioDevicePropertyDeviceIsRunning, kAudioObjectPropertyScopeGlobal, 0},
+            {kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioObjectPropertyScopeGlobal, 0}};
+        host->PropertiesChanged(host, Device, 3, addresses);
+    });
+}
+
+static void clearInput(void) {
+    pthread_mutex_lock(&ring->mutex);
+    ring->head = ring->count = ring->lastWrite = 0;
+    cacheValid = false;
+    pthread_mutex_unlock(&ring->mutex);
+}
 
 static AudioStreamBasicDescription format(void) {
     return (AudioStreamBasicDescription){ .mSampleRate = 48000, .mFormatID = kAudioFormatLinearPCM,
@@ -129,8 +152,17 @@ static OSStatus property(AudioObjectID object, Address address, UInt32 qualifier
             AudioServerPlugInCustomPropertyInfo infos[] = {
                 {CRISP_MIC_CONTROL, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0},
                 {CRISP_MIC_WRITE, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0},
-                {CRISP_MIC_STATUS, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0}};
+                {CRISP_MIC_STATUS, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0},
+                {CRISP_MIC_USAGE, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0}};
             return copy(out, capacity, size, infos, sizeof(infos));
+        }
+        case CRISP_MIC_USAGE: {
+            *size = sizeof(CFPropertyListRef);
+            if (!out) return noErr;
+            if (capacity < *size) return kAudioHardwareBadPropertySizeError;
+            CrispMicUsage usage = {1, atomic_load(&running) > 0};
+            *(CFDataRef *)out = CFDataCreate(NULL, (const UInt8 *)&usage, sizeof(usage));
+            return noErr;
         }
         case CRISP_MIC_CONTROL: case CRISP_MIC_WRITE: case CRISP_MIC_STATUS: {
             *size = sizeof(CFPropertyListRef);
@@ -182,6 +214,7 @@ static OSStatus initialize(Driver driver, AudioServerPlugInHostRef host) {
     if (driver != reference) return kAudioHardwareBadObjectError;
     if (!ring) ring = CrispRingCreate(4800);
     if (!ring) return kAudioHardwareUnspecifiedError;
+    pluginHost = host;
     mach_timebase_info_data_t info;
     mach_timebase_info(&info);
     ticksPerFrame = 1e9 * info.denom / info.numer / 48000;
@@ -243,7 +276,7 @@ static OSStatus set(Driver d, AudioObjectID id, pid_t pid, Address a, UInt32 qs,
         if (packet.version != 1 || packet.frames != 960) return kAudioHardwareIllegalOperationError;
         for (size_t i = 0; i < 960; ++i) packet.samples[i] = isfinite(packet.samples[i]) ? fmaxf(-1, fminf(1, packet.samples[i])) : 0;
         pthread_mutex_lock(&ring->mutex);
-        if (ring->enabled && ring->generation == packet.generation)
+        if (atomic_load(&running) > 0 && ring->enabled && ring->generation == packet.generation)
             CrispRingPushUnlocked(ring, packet.samples, packet.frames);
         pthread_mutex_unlock(&ring->mutex);
     }
@@ -251,13 +284,18 @@ static OSStatus set(Driver d, AudioObjectID id, pid_t pid, Address a, UInt32 qs,
 }
 static OSStatus start(Driver d, AudioObjectID id, UInt32 c) {
     if (d != reference || id != Device) return kAudioHardwareBadObjectError;
-    if (atomic_fetch_add(&running, 1) == 0) { atomic_store(&anchor, mach_absolute_time()); atomic_fetch_add(&seed, 1); }
+    if (atomic_fetch_add(&running, 1) == 0) {
+        clearInput();
+        atomic_store(&anchor, mach_absolute_time()); atomic_fetch_add(&seed, 1);
+        usageChanged();
+    }
     return noErr;
 }
 static OSStatus stop(Driver d, AudioObjectID id, UInt32 c) {
     if (d != reference || id != Device) return kAudioHardwareBadObjectError;
     UInt32 count = atomic_load(&running);
     while (count && !atomic_compare_exchange_weak(&running, &count, count - 1)) {}
+    if (count == 1) { clearInput(); usageChanged(); }
     return noErr;
 }
 static OSStatus timestamp(Driver d, AudioObjectID id, UInt32 c, Float64 *sample, UInt64 *host, UInt64 *outSeed) {
@@ -283,7 +321,7 @@ static OSStatus io(Driver d, AudioObjectID id, AudioObjectID stream, UInt32 c, U
     // Real-time: never wait, allocate, convert formats, log, or perform IPC here.
     if (!ring || pthread_mutex_trylock(&ring->mutex) != 0) { memset(main, 0, frames * 4); return noErr; }
     UInt64 now = mach_absolute_time();
-    if (!ring->enabled || !atomic_load(&streamActive) || !ring->lastWrite || now - ring->lastWrite >= expirationTicks) {
+    if (!atomic_load(&running) || !ring->enabled || !atomic_load(&streamActive) || !ring->lastWrite || now - ring->lastWrite >= expirationTicks) {
         ring->head = ring->count = 0; cacheValid = false; memset(main, 0, frames * 4);
     } else if (info && cacheValid && info->mInputTime.mSampleTime == cachedTime && cachedFrames == frames) {
         memcpy(main, cached, frames * 4);

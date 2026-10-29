@@ -142,9 +142,12 @@ final class CrispSystemAudioCapture {
 @available(macOS 14.2, *)
 final class CrispHardwareAudioBackend: CrispAudioBackend, @unchecked Sendable {
     private let microphone = CrispMicrophoneWriter()
+    private let usage = CrispMicrophoneUsage()
+    private var probeInput: CrispAudioProbeInput?
     private let capture = CrispSystemAudioCapture()
     private var microphoneStarted = false
     var onFailure: @Sendable (String) -> Void = { _ in }
+    var onMicrophoneUse: @Sendable (CrispAudioWire.MicrophoneUse) -> Void = { _ in }
     func setDiagnostics(_ recorder: LagRecorder?) {
         capture.recorder = recorder; microphone.setDiagnostics(recorder)
     }
@@ -153,10 +156,23 @@ final class CrispHardwareAudioBackend: CrispAudioBackend, @unchecked Sendable {
     func start() throws {
         capture.onFailure = onFailure
         try capture.start()
+        usage.start(onMicrophoneUse)
     }
-    func stop() { microphoneStarted = false; microphone.stop(); capture.stop() }
-    func shutdown() { microphoneStarted = false; microphone.stop(waitForMute: true); capture.stop() }
+    func stop() { _ = probeInput?.stop(analyze: false); probeInput = nil; usage.stop(); microphoneStarted = false; microphone.stop(); capture.stop() }
+    func shutdown() { _ = probeInput?.stop(analyze: false); probeInput = nil; usage.stop(); microphoneStarted = false; microphone.stop(waitForMute: true); capture.stop() }
+    func startProbeInput() throws {
+        let reader = CrispAudioProbeInput()
+        try reader.start(); probeInput = reader
+    }
+    func stopProbeInput() -> AudioProbeResult? {
+        let reader = probeInput; probeInput = nil
+        return reader?.stop()
+    }
     func setMicrophone(_ enabled: Bool) throws {
+        guard enabled else {
+            if microphoneStarted { microphone.stop(); microphoneStarted = false }
+            return
+        }
         if enabled, !microphoneStarted {
             guard let device = CrispAudioDevice.find() else {
                 throw CrispAudioWire.Failure(reason:

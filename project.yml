@@ -85,6 +85,7 @@ targets:
       - path: Crisp/Models/VirtualDisplayConfiguration.swift
       - path: Crisp/Models/VirtualDisplayModeRestorer.swift
       - path: Crisp/Models/CrispAudioWire.swift
+      - path: Crisp/Models/AudioProbe.swift
       - path: Crisp/Models/CrispAudioResampler.swift
       - path: Crisp/Services/CrispAudioServer.swift
       - path: Crisp/Models/LagData.swift

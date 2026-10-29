@@ -3,6 +3,7 @@ import Network
 
 protocol CrispAudioBackend: AnyObject, Sendable {
     var onFailure: @Sendable (String) -> Void { get set }
+    var onMicrophoneUse: @Sendable (CrispAudioWire.MicrophoneUse) -> Void { get set }
     func validate() throws
     func start() throws
     func stop()
@@ -11,11 +12,15 @@ protocol CrispAudioBackend: AnyObject, Sendable {
     func microphonePCM(_ bytes: Data)
     func downlinkPCM() -> Data
     func setDiagnostics(_ recorder: LagRecorder?)
+    func startProbeInput() throws
+    func stopProbeInput() -> AudioProbeResult?
 }
 
 extension CrispAudioBackend {
     func shutdown() { stop() }
     func setDiagnostics(_ recorder: LagRecorder?) {}
+    func startProbeInput() throws { throw CrispAudioWire.Failure(reason: "该音频后端不支持输入自测") }
+    func stopProbeInput() -> AudioProbeResult? { nil }
 }
 
 struct CrispAudioServerState: Sendable {
@@ -42,6 +47,10 @@ final class CrispAudioServer: @unchecked Sendable {
     private var acceptedAt = 0.0
     private var sends = 0
     private var starved = false
+    private var microphoneUse = CrispAudioWire.MicrophoneUse.unavailable
+    private var probeMode: UInt8 = 0
+    private var probeSequence = 0
+    private var probeDeadline = 0.0
     private struct Handshake { let connection: NWConnection; let timer: DispatchSourceTimer }
     private var pending: [UUID: Handshake] = [:]
     private var diagnostic: CrispLagSession?
@@ -227,16 +236,74 @@ final class CrispAudioServer: @unchecked Sendable {
                             self.closeClient(error: reason)
                         }
                     }
+                    backend.onMicrophoneUse = { [weak self, weak connection] use in
+                        guard let self, let connection else { return }
+                        self.queue.async {
+                            guard self.client === connection else { return }
+                            self.microphoneUse = use
+                            do {
+                                try self.applyMicrophone()
+                                self.send(.microphoneUse(use), connection)
+                            } catch { self.closeClient(error: error.localizedDescription) }
+                        }
+                    }
                     try backend.start(); send(.hello, connection); state.connected = true
-                case let .microphone(enabled):
-                    try backend.setMicrophone(enabled); state.microphone = enabled; starved = false
+                case .microphone:
+                    try applyMicrophone()
+                case let .probe(mode):
+                    try controlProbe(mode, connection)
                 case let .microphonePCM(pcm):
+                    guard state.microphone else { continue } // In-flight packets after last reader closes are discarded.
                     recorder?.interval("mic.receive_interval_ms")
                     recorder?.count("mic.packets")
                     backend.microphonePCM(pcm); starved = false
                 }
             }
         }
+    }
+
+    private func applyMicrophone() throws {
+        let active = session.microphoneEnabled && microphoneUse == .inUse
+        guard active != state.microphone else { return }
+        try backend.setMicrophone(active)
+        state.microphone = active; starved = false
+        if active { session.microphoneUseStarted(now: ProcessInfo.processInfo.systemUptime) }
+        publish()
+    }
+
+    private func controlProbe(_ mode: UInt8, _ connection: NWConnection) throws {
+        if mode == 0 {
+            let finished = probeMode
+            guard finished != 0 else { throw CrispAudioWire.Failure(reason: "没有进行中的音频测试") }
+            probeMode = 0
+            let result = backend.stopProbeInput()
+            _ = try session.receive(.microphone(false), now: ProcessInfo.processInfo.systemUptime)
+            try applyMicrophone()
+            sendProbe(AudioProbeReply(mode: finished, state: "result", result: result), connection)
+            return
+        }
+        guard probeMode == 0, !session.microphoneEnabled else {
+            throw CrispAudioWire.Failure(reason: "音频测试不能覆盖正在使用的麦克风")
+        }
+        do {
+            if mode == 2 {
+                guard microphoneUse == .idle else { throw CrispAudioWire.Failure(reason: "mini 远程麦克风不可用或正被应用使用") }
+                try backend.startProbeInput()
+            }
+            probeMode = mode; probeSequence = 0
+            probeDeadline = ProcessInfo.processInfo.systemUptime + 18
+            sendProbe(AudioProbeReply(mode: mode, state: "ready"), connection)
+        } catch {
+            _ = backend.stopProbeInput()
+            sendProbe(AudioProbeReply(mode: mode, state: "error", error: error.localizedDescription), connection)
+        }
+    }
+
+    private func sendProbe(_ reply: AudioProbeReply, _ connection: NWConnection) {
+        guard let data = try? JSONEncoder().encode(reply), data.count <= 1023 else {
+            closeClient(error: "音频测试结果超过协议限制"); return
+        }
+        send(.probeReply(data), connection)
     }
 
     private func tick() {
@@ -247,7 +314,10 @@ final class CrispAudioServer: @unchecked Sendable {
             return
         }
         recorder?.interval("audio.send_tick_ms")
-        if session.microphoneExpired(now: now), !starved {
+        if probeMode != 0, now >= probeDeadline {
+            closeClient(error: "音频自动测试超时，已释放输入设备"); return
+        }
+        if state.microphone, session.microphoneExpired(now: now), !starved {
             recorder?.count("mic.starvation_reset")
             do {
                 try backend.setMicrophone(false)
@@ -260,7 +330,8 @@ final class CrispAudioServer: @unchecked Sendable {
             recorder?.count("audio.send_backlog_disconnect")
             closeClient(error: "Audio send backlog exceeded 100 ms; reconnect manually"); return
         }
-        let pcm = backend.downlinkPCM()
+        let pcm = probeMode == 1 ? AudioProbeSignal.pcm(probeSequence) : backend.downlinkPCM()
+        if probeMode == 1 { probeSequence += 1 }
         guard pcm.count == CrispAudioWire.pcmBytes else { closeClient(error: "Invalid capture packet size"); return }
         send(.pcm(pcm), client) // Includes 960 zero bytes every 20 ms when no application is playing.
     }
@@ -288,6 +359,8 @@ final class CrispAudioServer: @unchecked Sendable {
         session.disconnect()
         state.connected = false
         state.microphone = false
+        microphoneUse = .unavailable
+        probeMode = 0
         state.peer = ""
         state.error = error
         publish()

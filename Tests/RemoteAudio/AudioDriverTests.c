@@ -4,8 +4,22 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <stdatomic.h>
 #include "../../AudioShared/CrispAudioShared.h"
 extern void *CrispRemoteMicrophone_Create(CFAllocatorRef, CFUUIDRef);
+static _Atomic unsigned usageNotifications = 0;
+
+static OSStatus propertiesChanged(AudioServerPlugInHostRef host, AudioObjectID object, UInt32 count,
+                                  const AudioObjectPropertyAddress *addresses) {
+    for (UInt32 i = 0; i < count; ++i)
+        if (object == 2 && addresses[i].mSelector == CRISP_MIC_USAGE) atomic_fetch_add(&usageNotifications, 1);
+    return noErr;
+}
+
+static void waitNotifications(unsigned count) {
+    for (unsigned i = 0; i < 100 && atomic_load(&usageNotifications) < count; ++i) usleep(10000);
+    assert(atomic_load(&usageNotifications) == count);
+}
 
 static AudioObjectPropertyAddress address(UInt32 selector, UInt32 scope) {
     return (AudioObjectPropertyAddress){selector, scope, 0};
@@ -40,7 +54,7 @@ int main(int argc, char **argv) {
     assert(factory);
     AudioServerPlugInDriverRef d = factory(NULL,kAudioServerPlugInTypeUUID);
     assert(d);
-    AudioServerPlugInHostInterface host={0};
+    AudioServerPlugInHostInterface host={0}; host.PropertiesChanged = propertiesChanged;
     assert((*d)->Initialize(d,&host)==noErr);
     AudioObjectPropertyAddress a=address(kAudioPlugInPropertyDeviceList,kAudioObjectPropertyScopeGlobal);
     UInt32 bytes=0, device=0;
@@ -55,6 +69,19 @@ int main(int argc, char **argv) {
     assert((*d)->GetPropertyData(d,2,getpid(),&a,0,NULL,sizeof(defaultable),&bytes,&defaultable)==noErr && defaultable==1);
     a.mScope=kAudioObjectPropertyScopeOutput;
     assert((*d)->GetPropertyData(d,2,getpid(),&a,0,NULL,sizeof(defaultable),&bytes,&defaultable)==noErr && defaultable==0);
+    // A device being visible/allowed is not a consumer. First actual reader
+    // starts demand; a second reader must not toggle it; only the last close stops it.
+    a=address(CRISP_MIC_USAGE,kAudioObjectPropertyScopeGlobal);
+    CFDataRef usageData=NULL;
+    assert((*d)->GetPropertyData(d,2,getpid(),&a,0,NULL,sizeof(usageData),&bytes,&usageData)==noErr);
+    CrispMicUsage usage={0}; CFDataGetBytes(usageData,CFRangeMake(0,sizeof(usage)),(UInt8 *)&usage); CFRelease(usageData);
+    assert(usage.version==1 && usage.running==0);
+    assert((*d)->StartIO(d,2,1)==noErr); waitNotifications(1);
+    assert((*d)->StartIO(d,2,2)==noErr);
+    assert((*d)->StopIO(d,2,1)==noErr);
+    a=address(kAudioDevicePropertyDeviceIsRunning,kAudioObjectPropertyScopeGlobal);
+    UInt32 running=0;
+    assert((*d)->GetPropertyData(d,2,getpid(),&a,0,NULL,sizeof(running),&bytes,&running)==noErr && running==1);
     a=address(kAudioDevicePropertyDeviceCanBeDefaultSystemDevice,kAudioObjectPropertyScopeOutput);
     assert((*d)->GetPropertyData(d,2,getpid(),&a,0,NULL,sizeof(defaultable),&bytes,&defaultable)==noErr && defaultable==0);
     writePacket(d,0.25,1); readPacket(d,0,0); // Closed by default.
@@ -68,6 +95,12 @@ int main(int argc, char **argv) {
     for(int i=1;i<=10;++i) writePacket(d,(float)i/10,5);
     readPacket(d,0.6,3360); // Only newest five packets (100 ms) survive overflow.
     control(d,false,6); readPacket(d,0,3840);
+    control(d,true,7); writePacket(d,0.75,7);
+    assert((*d)->StopIO(d,2,2)==noErr); waitNotifications(2);
+    writePacket(d,0.75,7); // Late network packet while nobody reads must not be retained.
+    assert((*d)->StartIO(d,2,3)==noErr); waitNotifications(3);
+    readPacket(d,0,4320);
+    assert((*d)->StopIO(d,2,3)==noErr); waitNotifications(4);
     CrispAudioRing *ring=CrispRingCreate(4800); float input[480]={0};
     pthread_mutex_lock(&ring->mutex);
     assert(CrispRingPushRealtime(ring,input,480)==0); // Real-time path never waits on the worker.

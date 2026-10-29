@@ -5,13 +5,18 @@ enum CrispAudioWire {
     static let sampleRate = 24_000.0
     static let framesPerPacket = 480
     static let pcmBytes = 960
-    static let hello = Data("SSE-CRISP-AUDIO/1 PCM_S16LE 24000 1 480".utf8)
+    static let hello = Data("SSE-CRISP-AUDIO/2 PCM_S16LE 24000 1 480".utf8)
     static let silence = Data(repeating: 0, count: pcmBytes)
+
+    enum MicrophoneUse: UInt8, Sendable { case unavailable = 0, idle = 1, inUse = 2 }
 
     enum Message: Equatable {
         case hello
         case pcm(Data)
         case microphone(Bool)
+        case microphoneUse(MicrophoneUse)
+        case probe(UInt8)
+        case probeReply(Data)
     }
 
     struct Failure: LocalizedError, Equatable {
@@ -26,6 +31,9 @@ enum CrispAudioWire {
         case .hello: kind = 1; payload = hello
         case let .pcm(bytes): kind = 2; payload = bytes
         case let .microphone(enabled): kind = 3; payload = Data([enabled ? 1 : 0])
+        case let .microphoneUse(use): kind = 4; payload = Data([use.rawValue])
+        case let .probe(mode): kind = 5; payload = Data([mode])
+        case let .probeReply(data): kind = 6; payload = data
         }
         let length = UInt32(payload.count + 1)
         var result = Data([UInt8(length >> 24), UInt8((length >> 16) & 255),
@@ -55,7 +63,7 @@ enum CrispAudioWire {
                 } else {
                     body.append(byte)
                     if body.count == 1 {
-                        let expected = byte == 1 ? CrispAudioWire.hello.count + 1 : byte == 2 ? pcmBytes + 1 : byte == 3 ? 2 : 0
+                        let expected = byte == 1 ? CrispAudioWire.hello.count + 1 : byte == 2 ? pcmBytes + 1 : (3...5).contains(byte) ? 2 : byte == 6 ? length! : 0
                         guard expected != 0, length == expected else {
                             throw Failure(reason: "Unknown audio kind or invalid payload length")
                         }
@@ -84,6 +92,17 @@ enum CrispAudioWire {
                     throw Failure(reason: "Invalid microphone control payload")
                 }
                 return .microphone(value == 1)
+            case 4:
+                guard payload.count == 1, let value = payload.first, let use = MicrophoneUse(rawValue: value) else {
+                    throw Failure(reason: "Invalid microphone-use payload")
+                }
+                return .microphoneUse(use)
+            case 5:
+                guard payload.count == 1, let mode = payload.first, mode <= 2 else { throw Failure(reason: "Invalid audio test mode") }
+                return .probe(mode)
+            case 6:
+                guard !payload.isEmpty else { throw Failure(reason: "Empty audio test result") }
+                return .probeReply(payload)
             default:
                 throw Failure(reason: "Unknown audio message kind")
             }
@@ -100,6 +119,7 @@ struct CrispAudioSession {
         case replyHello
         case microphone(Bool)
         case microphonePCM(Data)
+        case probe(UInt8)
     }
 
     mutating func receive(_ message: CrispAudioWire.Message, now: TimeInterval) throws -> Action? {
@@ -112,6 +132,9 @@ struct CrispAudioSession {
         switch message {
         case .hello:
             throw CrispAudioWire.Failure(reason: "Repeated hello is not permitted")
+        case .microphoneUse, .probeReply:
+            throw CrispAudioWire.Failure(reason: "Only the server may report microphone use")
+        case let .probe(mode): return .probe(mode)
         case let .microphone(enabled):
             microphoneEnabled = enabled
             lastMicrophonePacket = enabled ? now : nil
@@ -125,6 +148,11 @@ struct CrispAudioSession {
 
     func microphoneExpired(now: TimeInterval) -> Bool {
         microphoneEnabled && lastMicrophonePacket.map { now - $0 >= 0.2 } == true
+    }
+
+    mutating func microphoneUseStarted(now: TimeInterval) {
+        // Time spent waiting for a consumer is not a broken audio stream.
+        lastMicrophonePacket = microphoneEnabled ? now : nil
     }
 
     mutating func disconnect() {

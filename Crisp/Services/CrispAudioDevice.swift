@@ -7,6 +7,7 @@ enum CrispAudioDevice {
     static let control: AudioObjectPropertySelector = 0x636d6374
     static let write: AudioObjectPropertySelector = 0x636d7772
     static let status: AudioObjectPropertySelector = 0x636d7374
+    static let usage: AudioObjectPropertySelector = 0x636d7573
 
     static func find() -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
@@ -47,6 +48,79 @@ enum CrispAudioDevice {
         guard result == noErr else {
             throw CrispAudioWire.Failure(reason: "Virtual microphone write failed (\(result)); reconnect after checking the device")
         }
+    }
+}
+
+/// Observe the HAL's actual input consumers; never open the input ourselves
+/// and never poll. A missing/old driver reports unavailable, not "idle".
+final class CrispMicrophoneUsage: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.crisp.remote-audio.input-use")
+    private var observed: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+    private var generation = UUID()
+    private var device: AudioDeviceID = 0
+    private var last: CrispAudioWire.MicrophoneUse?
+    private var changed: @Sendable (CrispAudioWire.MicrophoneUse) -> Void = { _ in }
+
+    func start(_ changed: @escaping @Sendable (CrispAudioWire.MicrophoneUse) -> Void) {
+        queue.sync {
+            stopOnQueue()
+            self.changed = changed
+            guard let device = CrispAudioDevice.find() else { changed(.unavailable); return }
+            self.device = device
+            let token = generation
+            let properties: [(AudioObjectID, AudioObjectPropertySelector)] = [
+                (device, CrispAudioDevice.usage),
+                (AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDevices)
+            ]
+            for (object, selector) in properties {
+                var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+                let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                    guard let self, self.generation == token else { return }
+                    self.publish()
+                }
+                guard AudioObjectHasProperty(object, &address),
+                      AudioObjectAddPropertyListenerBlock(object, &address, queue, block) == noErr else {
+                    stopOnQueue(); changed(.unavailable); return
+                }
+                observed.append((object, address, block))
+            }
+            publish() // Subscription first: do not miss an already-open input.
+        }
+    }
+
+    func stop() { queue.sync { stopOnQueue() } }
+
+    private func stopOnQueue() {
+        generation = UUID()
+        for (object, var address, block) in observed {
+            AudioObjectRemovePropertyListenerBlock(object, &address, queue, block)
+        }
+        observed.removeAll(); device = 0; last = nil; changed = { _ in }
+    }
+
+    private func publish() {
+        let use = read()
+        guard last != use else { return }
+        last = use
+        changed(use)
+    }
+
+    private func read() -> CrispAudioWire.MicrophoneUse {
+        var address = AudioObjectPropertyAddress(mSelector: CrispAudioDevice.usage,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+        var raw: UnsafeMutableRawPointer?
+        var size = UInt32(MemoryLayout<UnsafeMutableRawPointer?>.size)
+        guard device != 0,
+              AudioObjectGetPropertyData(device, &address, 0, nil, &size, &raw) == noErr,
+              let raw else { return .unavailable }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeRetainedValue()
+        guard CFGetTypeID(data) == CFDataGetTypeID(), CFDataGetLength(data) == MemoryLayout<CrispMicUsage>.size else { return .unavailable }
+        var value = CrispMicUsage()
+        withUnsafeMutableBytes(of: &value) { bytes in
+            bytes.baseAddress!.copyMemory(from: CFDataGetBytePtr(data)!, byteCount: bytes.count)
+        }
+        guard value.version == 1, value.running <= 1 else { return .unavailable }
+        return value.running == 1 ? .inUse : .idle
     }
 }
 

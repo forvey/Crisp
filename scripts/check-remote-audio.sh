@@ -14,12 +14,14 @@ if [ ! -f "$CONTROLLER/Sources/ScreenSharingEnhancer/AudioWire.swift" ]; then
     exit 2
 fi
 git -C "$CONTROLLER" rev-parse HEAD > build/audio-evidence/controller-revision.txt
-# Both independent repositories carry the v1 wire schema; prevent drift before
+# Both independent repositories carry the diagnostics schema; prevent drift before
 # the test links the server's copy with the controller's actual implementation.
 cmp Crisp/Models/LagData.swift "$CONTROLLER/Sources/ScreenSharingEnhancer/LagData.swift"
+cmp Crisp/Models/AudioProbe.swift "$CONTROLLER/Sources/ScreenSharingEnhancer/AudioProbe.swift"
 # The peer project uses Swift 5.9. Compile its unchanged transport with the actual server.
 xcrun swiftc -O -swift-version 5 -parse-as-library \
     Crisp/Models/CrispAudioWire.swift Crisp/Services/CrispAudioServer.swift \
+    Crisp/Models/AudioProbe.swift \
     Crisp/Models/LagData.swift Crisp/Services/CrispLagSession.swift Crisp/Services/CrispLagPattern.swift \
     "$CONTROLLER/Sources/ScreenSharingEnhancer/AudioWire.swift" \
     "$CONTROLLER/Sources/ScreenSharingEnhancer/LagSession.swift" \
