@@ -11,6 +11,7 @@ final class CrispLagSession: @unchecked Sendable {
     private var parser = LagWire.Parser()
     private var recorder: LagRecorder?
     private var sampler: LagResourceSampler?
+    private var screenCollector: LagScreenCollector?
     private var timer: DispatchSourceTimer?
     private var deadlineTimer: DispatchSourceTimer?
     private var deadline = 0.0
@@ -83,7 +84,7 @@ final class CrispLagSession: @unchecked Sendable {
             let recorder = LagRecorder(scope: scope)
             self.recorder = recorder; sampler = LagResourceSampler(); attach(recorder)
             send(LagMessage(kind: "started", id: id, time: now,
-                            note: "resources,audio,pattern-v1,motion-v1,motion-v2,quality-v2; no desktop encoder/decoder counters"))
+                            note: "resources,audio,pattern-v1,motion-v1,motion-v2,quality-v2,screen-evidence-v1; no desktop encoder/decoder counters"))
             return
         }
         guard message.id == id, now < deadline else { closeOnQueue(); return }
@@ -106,6 +107,10 @@ final class CrispLagSession: @unchecked Sendable {
                   let token = message.sequence, (1...4095).contains(token),
                   deadline - now >= 20 else { throw LagError.invalidMessage }
             motionToken = token
+            if message.collectScreenTrace == true {
+                screenCollector = LagScreenCollector(queue: queue,
+                    peer: LagScreenParser.peer(connection.currentPath?.remoteEndpoint ?? connection.endpoint), server: true)
+            }
             let sessionID = id
             // All start/stop/close operations are submitted from this serial
             // queue to the main queue in order. A late start cannot overtake close.
@@ -115,7 +120,8 @@ final class CrispLagSession: @unchecked Sendable {
                     self.queue.async {
                         guard !self.closed, self.motionToken == token else { return }
                         self.motionToken = nil
-                        self.send(LagMessage(kind: "motionResult", id: sessionID, motion: result))
+                        let trace = self.screenCollector?.stop(); self.screenCollector = nil
+                        self.send(LagMessage(kind: "motionResult", id: sessionID, motion: result, screenTrace: trace))
                     }
                 }
             }
@@ -182,6 +188,7 @@ final class CrispLagSession: @unchecked Sendable {
     private func closeOnQueue() {
         guard !closed else { return }
         closed = true; timer?.cancel(); timer = nil
+        screenCollector?.stop(); screenCollector = nil
         deadlineTimer?.cancel(); deadlineTimer = nil
         recorder?.stop(); attach(nil); recorder = nil; sampler = nil
         let sessionID = id

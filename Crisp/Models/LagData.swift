@@ -247,6 +247,53 @@ struct LagMessage: Codable, Sendable {
     var note: String?
     var motion: LagMotionSource?
     var quality: LagQualityReference?
+    var collectScreenTrace: Bool?
+    var screenTrace: LagScreenTrace?
+}
+
+// Numeric, bounded evidence for the actual native screen connection. Counters
+// are cumulative OS values, NOT bytes lost during this test. Compare adjacent
+// samples of the same connection; a one-second interval cannot explain 100 ms.
+struct LagTCPReading: Codable, Sendable {
+    let stamp: Double
+    let connection: String
+    let interface: String
+    let bytesIn: UInt64
+    let bytesOut: UInt64
+    let retransmitBytes: UInt64?
+    let duplicateBytes: UInt64?
+    let outOfOrderBytes: UInt64?
+    let rttMS: Double?
+    let receiveBuffer: UInt64?
+    let sendWindow: UInt64?
+}
+struct LagSystemEvent: Codable, Sendable {
+    // Nil when the wall clock changed or the OS did not expose an event time.
+    let stamp: Double?
+    let receivedAt: Double
+    let kind: String
+    let durationMS: Double?
+}
+struct LagScreenTrace: Codable, Sendable {
+    let started: Double
+    let wallTime: Date
+    var ended: Double?
+    var tcp: [LagTCPReading] = []
+    var events: [LagSystemEvent] = []
+    var notes: [String] = []
+    var tcpState = "notStarted"
+    var logState = "notStarted"
+    var truncated = false
+
+    var valid: Bool {
+        started.isFinite && started >= 0 && (ended.map { $0.isFinite && $0 >= started } ?? true) &&
+        tcp.count <= 128 && events.count <= 256 && notes.count <= 12 && notes.allSatisfy { $0.utf8.count <= 512 } &&
+        tcp.allSatisfy { $0.stamp.isFinite && $0.stamp >= started && $0.connection.utf8.count <= 256 &&
+            $0.interface.utf8.count <= 32 && ($0.rttMS.map { $0.isFinite && $0 >= 0 } ?? true) } &&
+        events.allSatisfy { $0.receivedAt.isFinite && ($0.stamp.map(\.isFinite) ?? true) &&
+            ["wifiScanStart", "wifiScanEnd", "gpuAllocationFailure"].contains($0.kind) &&
+            ($0.durationMS.map { $0.isFinite && $0 >= 0 && $0 <= 60_000 } ?? true) }
+    }
 }
 
 /// Only numeric evidence from our own test window; never desktop pixels.

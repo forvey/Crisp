@@ -35,8 +35,8 @@ targets:
         # Without an explicit MARKETING_VERSION the generated Info.plist omits
         # CFBundleShortVersionString and the app self-reports 1.0.0 forever,
         # which keeps the update banner visible even on the latest release.
-        MARKETING_VERSION: "1.7.1"
-        CURRENT_PROJECT_VERSION: "9"
+        MARKETING_VERSION: "1.7.2"
+        CURRENT_PROJECT_VERSION: "10"
         INFOPLIST_KEY_LSUIElement: true
         INFOPLIST_KEY_NSHumanReadableCopyright: "Crisp - Free & Open Source"
         INFOPLIST_KEY_NSAppleEventsUsageDescription: "Crisp uses System Events to switch Dark Mode with the system's animated transition."
@@ -92,6 +92,7 @@ targets:
       - path: Crisp/Models/LagData.swift
       - path: Crisp/Models/LagQuality.swift
       - path: Crisp/Services/CrispLagSession.swift
+      - path: Crisp/Models/LagScreenTrace.swift
       - path: Crisp/Services/CrispLagPattern.swift
       - path: Crisp/Models/DDCOperationGeneration.swift
       - path: Crisp/Models/DDCTopologyChange.swift

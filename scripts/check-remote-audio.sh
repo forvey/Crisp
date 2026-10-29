@@ -17,6 +17,7 @@ git -C "$CONTROLLER" rev-parse HEAD > build/audio-evidence/controller-revision.t
 # Both independent repositories carry the diagnostics schema; prevent drift before
 # the test links the server's copy with the controller's actual implementation.
 cmp Crisp/Models/LagData.swift "$CONTROLLER/Sources/ScreenSharingEnhancer/LagData.swift"
+cmp Crisp/Models/LagScreenTrace.swift "$CONTROLLER/Sources/ScreenSharingEnhancer/LagScreenTrace.swift"
 cmp Crisp/Models/LagQuality.swift "$CONTROLLER/Sources/ScreenSharingEnhancer/LagQuality.swift"
 cmp Crisp/Models/AudioProbe.swift "$CONTROLLER/Sources/ScreenSharingEnhancer/AudioProbe.swift"
 # Actual writer and streaming resampler, replacing only HAL property IPC.
@@ -31,7 +32,7 @@ xcrun swiftc -O -swift-version 5 -parse-as-library \
     Crisp/Models/CrispAudioWire.swift Crisp/Services/CrispAudioServer.swift \
     Crisp/Models/AudioProbe.swift \
     Crisp/Models/LagData.swift Crisp/Models/LagQuality.swift \
-    Crisp/Services/CrispLagSession.swift Crisp/Services/CrispLagPattern.swift \
+    Crisp/Services/CrispLagSession.swift Crisp/Services/CrispLagPattern.swift Crisp/Models/LagScreenTrace.swift \
     "$CONTROLLER/Sources/ScreenSharingEnhancer/AudioWire.swift" \
     "$CONTROLLER/Sources/ScreenSharingEnhancer/LagSession.swift" \
     "$CONTROLLER/Sources/ScreenSharingEnhancer/LagMotion.swift" \
