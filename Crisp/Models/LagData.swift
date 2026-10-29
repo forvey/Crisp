@@ -201,7 +201,9 @@ final class LagResourceSampler {
 // Diagnostics use a separate connection on the existing audio listener.
 enum LagWire {
     static let hello = Data("SSE-CRISP-DIAGNOSTICS/1".utf8)
-    static let limit = 65_536
+    // A 2x-rendered test chart is larger than the old fixed bitmap; this remains
+    // bounded and applies only to the explicitly opened diagnostic connection.
+    static let limit = 262_144
     static func framed(_ data: Data) -> Data {
         var length = UInt32(data.count).bigEndian
         return withUnsafeBytes(of: &length) { Data($0) } + data

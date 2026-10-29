@@ -50,13 +50,19 @@ import AppKit
 
     func startQuality(id: String, token: Int) throws -> LagQualityReference {
         guard motionToken == nil, qualityToken == nil else { throw LagError.invalidMessage }
-        let reference = try LagQualityChart.make(token: token)
-        guard let image = NSImage(data: reference.png),
-              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main else {
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main,
+              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let mode = CGDisplayCopyDisplayMode(number.uint32Value) else {
             throw LagError.invalidMessage
         }
-        let size = NSSize(width: Double(LagQualityChart.width) / screen.backingScaleFactor,
-                          height: Double(LagQualityChart.height) / screen.backingScaleFactor)
+        let scale = Int(screen.backingScaleFactor)
+        guard Double(scale) == screen.backingScaleFactor else { throw LagError.invalidMessage }
+        let display = LagDisplay(id: number.uint32Value, width: mode.width, height: mode.height,
+            pixelWidth: mode.pixelWidth, pixelHeight: mode.pixelHeight,
+            backingScale: screen.backingScaleFactor, refreshRate: mode.refreshRate)
+        let reference = try LagQualityChart.make(token: token, scale: scale, display: display)
+        guard let image = NSImage(data: reference.png) else { throw LagError.invalidMessage }
+        let size = NSSize(width: Double(LagQualityChart.width), height: Double(LagQualityChart.height))
         image.size = size
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -67,7 +73,7 @@ import AppKit
                                       y: screen.visibleFrame.midY - size.height / 2))
         self.window?.close(); self.window = window; self.id = id; qualityToken = token
         window.orderFrontRegardless(); window.displayIfNeeded()
-        let expiry = Timer(timeInterval: 12, repeats: false) { [weak self] _ in
+        let expiry = Timer(timeInterval: 16, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.close(id: id) }
         }
         self.expiry?.invalidate(); self.expiry = expiry; RunLoop.main.add(expiry, forMode: .common)
@@ -87,7 +93,7 @@ import AppKit
     /// The animation runs locally at 30 fps, not in response to per-frame TCP
     /// commands. Evidence records draw() completion, NOT timer firings or proof
     /// of compositor/encoder output. No timer exists before this explicit call.
-    func startMotion(id: String, token: Int, completion: @escaping (LagMotionSource) -> Void) {
+    func startMotion(id: String, token: Int, waitingForReader: Bool = false, completion: @escaping (LagMotionSource) -> Void) {
         guard motionToken == nil, qualityToken == nil else { return }
         show(id: id, sequence: 0)
         guard let view = window?.contentView as? PatternView else { return }
@@ -99,6 +105,20 @@ import AppKit
             guard let self, self.id == id, self.motionToken == token, self.frames.count < 512 else { return }
             self.frames.append(LagMotionFrame(number: number, stamp: LagRecorder.now()))
         }
+        motionBegan = 0
+        if waitingForReader {
+            view.previewMotion(); window?.displayIfNeeded()
+            let expiry = Timer(timeInterval: 5, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.finishMotion(completed: false) }
+            }
+            self.expiry = expiry; RunLoop.main.add(expiry, forMode: .common)
+        } else { runMotion(id: id, token: token) }
+    }
+
+    func runMotion(id: String, token: Int) {
+        guard self.id == id, motionToken == token, motionBegan == 0,
+              let view = window?.contentView as? PatternView else { return }
+        expiry?.invalidate(); view.resetMotion()
         let began = LagRecorder.now()
         motionBegan = began
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
@@ -131,7 +151,7 @@ import AppKit
         motionTimer?.invalidate(); motionTimer = nil
         expiry?.invalidate(); expiry = nil
         let result = LagMotionSource(token: token, frames: frames, completed: completed,
-                                    started: motionBegan, ended: LagRecorder.now())
+                                    started: motionBegan == 0 ? LagRecorder.now() : motionBegan, ended: LagRecorder.now())
         let completion = motionCompletion
         motionToken = nil; motionCompletion = nil; frames = []
         window?.close(); window = nil; id = ""
@@ -144,6 +164,9 @@ import AppKit
         var frameDidDraw: ((Int) -> Void)?
         private var frame = 0
         private var advancing = false
+
+        func previewMotion() { frame = 1; advancing = false; needsDisplay = true }
+        func resetMotion() { frame = 0; advancing = false }
 
         func advanceMotion() {
             guard frame < 512 else { return }

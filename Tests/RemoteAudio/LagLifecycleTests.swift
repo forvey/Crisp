@@ -76,6 +76,35 @@ enum LagLifecycleTests {
         precondition(LagRecorder.now() - motionBegan >= 14.8)
         print("Motion lifecycle passed: autonomous draws, partial stop, stale stop isolation, independent 15-second expiry")
 
+        // A visible preparation marker must not consume the motion test. Only
+        // this session's Run starts drawing; no acknowledgement closes it in 5s.
+        var prepared: [LagMotionSource] = []
+        pattern.startMotion(id: "motion-ready", token: 19, waitingForReader: true) { prepared.append($0) }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        pattern.runMotion(id: "previous-session", token: 19)
+        pattern.runMotion(id: "motion-ready", token: 18)
+        precondition(shown() != nil && prepared.isEmpty)
+        pattern.stopMotion(id: "motion-ready", token: 19)
+        precondition(prepared.count == 1 && prepared[0].frames.isEmpty && !prepared[0].completed)
+
+        pattern.startMotion(id: "motion-run", token: 20, waitingForReader: true) { prepared.append($0) }
+        pattern.runMotion(id: "motion-run", token: 20)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        pattern.runMotion(id: "motion-run", token: 20) // duplicate must not reset numbering
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        pattern.stopMotion(id: "motion-run", token: 20)
+        precondition(prepared.count == 2 && prepared[1].valid && prepared[1].frames.count >= 3)
+        precondition(prepared[1].ended - prepared[1].started >= 0.35)
+
+        pattern.startMotion(id: "motion-unread", token: 21, waitingForReader: true) { prepared.append($0) }
+        let preparationBegan = LagRecorder.now()
+        while shown() != nil, LagRecorder.now() - preparationBegan < 5.7 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        precondition(shown() == nil && prepared.count == 3)
+        precondition(prepared[2].frames.isEmpty && !prepared[2].completed)
+        print("Motion readiness passed: static preparation, matching/duplicate Run and unacknowledged expiry")
+
         // Clarity displays the exact generated reference at source-native
         // pixels. Stop, stale close and independent expiry must release it.
         func qualityWindow() -> NSWindow? {
@@ -86,18 +115,20 @@ enum LagLifecycleTests {
             preconditionFailure("Clarity chart not shown")
         }
         let nativeSize = qualityView.convertToBacking(qualityView.bounds).size
-        precondition(Int(nativeSize.width) == LagQualityChart.width && Int(nativeSize.height) == LagQualityChart.height)
+        precondition(Int(qualityView.bounds.width) == LagQualityChart.width && Int(qualityView.bounds.height) == LagQualityChart.height)
+        precondition(Int(nativeSize.width) == LagQualityChart.width * reference.scale && Int(nativeSize.height) == LagQualityChart.height * reference.scale)
+        precondition(reference.display?.backingScale == Double(reference.scale))
         pattern.close(id: "previous-session")
         precondition(qualityWindow() != nil)
         pattern.close(id: "quality-stop")
         precondition(qualityWindow() == nil)
         _ = try! pattern.startQuality(id: "quality-expiry", token: 32)
         let qualityBegan = LagRecorder.now()
-        while qualityWindow() != nil, LagRecorder.now() - qualityBegan < 13 {
+        while qualityWindow() != nil, LagRecorder.now() - qualityBegan < 17 {
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
-        precondition(qualityWindow() == nil && LagRecorder.now() - qualityBegan >= 11.8)
-        print("Clarity lifecycle passed: native pixels, stale stop isolation, explicit stop and independent 12-second expiry")
+        precondition(qualityWindow() == nil && LagRecorder.now() - qualityBegan >= 15.8)
+        print("Clarity lifecycle passed: display-scale pixels, stale stop isolation, explicit stop and independent 16-second expiry")
     }
 
     static func maximumDuration(port: UInt16) -> Double {

@@ -1,17 +1,34 @@
 import AppKit
 import ImageIO
 
+/// Captured from the tested display, not inferred from a checkbox or window size.
+struct LagDisplay: Codable, Sendable {
+    let id: UInt32
+    let width: Int
+    let height: Int
+    let pixelWidth: Int
+    let pixelHeight: Int
+    let backingScale: Double
+    let refreshRate: Double
+    var text: String {
+        "mini 显示器 \(id)：桌面 \(width) × \(height)，渲染 \(pixelWidth) × \(pixelHeight) 像素，HiDPI \(pixelWidth > width ? "开" : "关")，界面倍率 \(backingScale)×"
+    }
+}
+
 /// Only the program-generated chart crosses the diagnostic connection. No
 /// remote desktop screenshot is transmitted. Bounded before decoding pixels.
 struct LagQualityReference: Codable, Sendable {
     let token: Int
     let png: Data
+    var renderScale: Int? = nil
+    var display: LagDisplay? = nil
+    var scale: Int { renderScale ?? 1 }
     var valid: Bool {
-        guard (1...4095).contains(token), png.count <= 45000,
+        guard (1...4095).contains(token), (1...2).contains(scale), png.count <= 160_000,
               let source = CGImageSourceCreateWithData(png as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return false }
-        return properties[kCGImagePropertyPixelWidth] as? Int == LagQualityChart.width &&
-            properties[kCGImagePropertyPixelHeight] as? Int == LagQualityChart.height
+        return properties[kCGImagePropertyPixelWidth] as? Int == LagQualityChart.width * scale &&
+            properties[kCGImagePropertyPixelHeight] as? Int == LagQualityChart.height * scale
     }
 }
 
@@ -31,15 +48,15 @@ enum LagQualityChart {
         CGRect(x: 24 + index * 92, y: 348, width: 72, height: 56)
     }
 
-    @MainActor static func make(token: Int) throws -> LagQualityReference {
-        guard (1...4095).contains(token),
-              let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+    @MainActor static func make(token: Int, scale: Int = 1, display: LagDisplay? = nil) throws -> LagQualityReference {
+        guard (1...4095).contains(token), (1...2).contains(scale),
+              let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width * scale, pixelsHigh: height * scale,
                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32),
+                colorSpaceName: .deviceRGB, bytesPerRow: width * scale * 4, bitsPerPixel: 32),
               let bytes = image.bitmapData else { throw LagError.invalidMessage }
         func fill(_ rect: CGRect, _ rgb: (UInt8, UInt8, UInt8)) {
-            for y in Int(rect.minY)..<Int(rect.maxY) {
-                for x in Int(rect.minX)..<Int(rect.maxX) {
+            for y in (Int(rect.minY) * scale)..<(Int(rect.maxY) * scale) {
+                for x in (Int(rect.minX) * scale)..<(Int(rect.maxX) * scale) {
                     let i = y * image.bytesPerRow + x * 4
                     bytes[i] = rgb.0; bytes[i + 1] = rgb.1; bytes[i + 2] = rgb.2; bytes[i + 3] = 255
                 }
@@ -80,6 +97,9 @@ enum LagQualityChart {
         guard let graphics = NSGraphicsContext(bitmapImageRep: image) else { throw LagError.invalidMessage }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = graphics
+        // Same logical font size on both modes: HiDPI rasterizes fresh glyphs
+        // into twice as many pixels, rather than stretching the old bitmap.
+        graphics.cgContext.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
         for (size, top, text) in [
             (12.0, 78.0, "费用预算 / Budget 0123456789  部门 Department"),
             (16.0, 116.0, "预算项目：办公用品  ￥12,345.67   Balance = 12345.67"),
@@ -90,7 +110,7 @@ enum LagQualityChart {
         }
         NSGraphicsContext.restoreGraphicsState()
         guard let png = image.representation(using: .png, properties: [:]) else { throw LagError.invalidMessage }
-        let result = LagQualityReference(token: token, png: png)
+        let result = LagQualityReference(token: token, png: png, renderScale: scale, display: display)
         guard result.valid else { throw LagError.invalidMessage }
         return result
     }
@@ -110,19 +130,27 @@ struct LagQualityResult: Codable {
     var lineContrast: [Double] = []
     var colorDifference: Double?
     var reason: String?
+    var display: LagDisplay?
+    var renderScale: Int?
+    var screenPermissionGranted: Bool?
+    var capturedFrames: Int?
+    var unmatchedFrames: Int?
+    var preparationMS: Int?
+    var measuredSeconds: Double?
     var text: String {
         guard lastFrameMatched, samples > 0, let scaleX, let scaleY, let textDifference, let colorDifference, lineContrast.count == 3 else {
             return "画面清晰度：不能判定。未取得完整的本次图案，或最后画面已无法对齐。\n" + (reason ?? "")
         }
-        let reduced = min(scaleX, scaleY) < 0.95
-        var lines = ["画面清晰度诊断（固定图，与 mini 原图比较）"]
+        let reduced = min(scaleX, scaleY) < 0.99
+        var lines = ["画面清晰度诊断（同样字号，按 mini 当前显示倍率绘制）"]
         if let client { lines.append("本机窗口：\(client) · \(windowPixels ?? "尺寸未知") 像素") }
+        if let display { lines.append(display.text) }
         lines.append("测量客户端解码、缩放后绘制的窗口，不是后台收到的原始图像；不含物理显示器效果。")
-        lines.append(String(format: "显示比例：横向 %.0f%%，纵向 %.0f%%。%@", scaleX * 100, scaleY * 100,
+        lines.append(String(format: "源渲染像素到本机像素：横向 %.1f%%，纵向 %.1f%%。%@", scaleX * 100, scaleY * 100,
                             reduced ? "当前画面被缩小，细节损失不能直接归因压缩或网络。" : "未发现明显缩小。"))
         lines.append(String(format: "中文/英文文字图像差异：%.1f%%（越低越接近原图；不是识字率）。", textDifference * 100))
         for index in 0..<3 {
-            lines.append(String(format: "%d 像素细线：对比度保留 %.0f%%（越高越能分清黑白细线）。",
+            lines.append(String(format: "%d 点细线：对比度保留 %.0f%%（HiDPI 每点占更多渲染像素）。",
                                 LagQualityChart.lineWidths[index], lineContrast[index] * 100))
         }
         lines.append(String(format: "色块平均 RGB 差异：%.1f / 255（不是物理屏幕校色结果）。", colorDifference * 255))
@@ -133,6 +161,9 @@ struct LagQualityResult: Codable {
             lines.append("结论：本次窗口图像存在可测的细节或颜色差异；不能单凭此结果定位到编码或网络。")
         } else { lines.append("结论：本次固定图未发现明显差异；不代表所有字体、视频或物理屏幕都清晰。") }
         lines.append("检查 \(samples) 个完整图像，报告最后一次结果；不保存截图。")
+        if let renderScale {
+            lines.append("测试文字为 12/16/24 点，源图渲染倍率 \(renderScale)×。HiDPI 不同的两份报告参考图也不同，不能只按文字差异百分比判断哪份更清楚。")
+        }
         if let reason { lines.append(reason) }
         return lines.joined(separator: "\n")
     }
@@ -160,7 +191,7 @@ struct LagQualityComparison: Codable {
                     String(format: "显示比例（横/纵） ｜ %.0f/%.0f%% ｜ %.0f/%.0f%%", ax * 100, ay * 100, bx * 100, by * 100),
                     String(format: "文字图像差异（低更接近原图） ｜ %.1f%% ｜ %.1f%%", at * 100, bt * 100)]
         for i in 0..<3 {
-            rows.append(String(format: "%d 像素细线对比度（高更清楚） ｜ %.0f%% ｜ %.0f%%",
+            rows.append(String(format: "%d 点细线对比度（高更清楚） ｜ %.0f%% ｜ %.0f%%",
                                LagQualityChart.lineWidths[i], a.lineContrast[i] * 100, b.lineContrast[i] * 100))
         }
         if abs(ax - bx) > 0.03 || abs(ay - by) > 0.03 {
