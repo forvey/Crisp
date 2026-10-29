@@ -174,6 +174,11 @@ struct AudioProbeStats: Codable, Equatable, Sendable {
     var halRejectedPackets: UInt64?
     var halReadFrames: UInt64?
     var halNonzeroFrames: UInt64?
+    var halOverflowFrames: UInt64?
+    var halUnderflowFrames: UInt64?
+    var halPrimingFrames: UInt64?
+    var halContentionFrames: UInt64?
+    var halExpiredFrames: UInt64?
 
     var text: String {
         var parts: [String] = []
@@ -187,6 +192,17 @@ struct AudioProbeStats: Codable, Equatable, Sendable {
         if let halRejectedPackets { parts.append("驱动拒收 \(halRejectedPackets) 包") }
         if let halReadFrames { parts.append("驱动输出 \(halReadFrames) 采样点") }
         if let halNonzeroFrames { parts.append("其中非零 \(halNonzeroFrames) 采样点") }
+        // The HAL runs at 48 kHz. Startup/rebuffer silence is separate from a
+        // real underrun; missing fields from old drivers are never printed as 0.
+        for (label, frames) in [
+            ("驱动缓冲满后丢弃", halOverflowFrames),
+            ("驱动缓冲耗尽补静音", halUnderflowFrames),
+            ("驱动起播/重新缓冲等待", halPrimingFrames),
+            ("驱动锁冲突补静音", halContentionFrames),
+            ("驱动超时清空", halExpiredFrames)
+        ] {
+            if let frames { parts.append(String(format: "%@ %.1f ms", label, Double(frames) / 48)) }
+        }
         if let queueDrops { parts.append("队列丢弃 \(queueDrops) 包") }
         if let staleDrops { parts.append("过期丢弃 \(staleDrops) 包") }
         if let pendingPackets { parts.append("结束时待写 \(pendingPackets) 包") }

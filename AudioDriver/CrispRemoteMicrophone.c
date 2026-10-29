@@ -26,6 +26,13 @@ static _Atomic bool streamActive = true;
 static AudioServerPlugInHostRef pluginHost;
 static _Atomic bool probeEnabled = false;
 static _Atomic uint64_t probeAccepted = 0, probeRejected = 0, probeRead = 0, probeNonzero = 0;
+static _Atomic uint64_t probeOverflow = 0, probeUnderflow = 0, probePriming = 0, probeContention = 0, probeExpired = 0;
+// One playback buffer, consumed only by ReadInput. 160 ms covers the observed
+// 140-ms delivery gap; a real underrun grows the reserve to 200 ms. Cap at 300
+// ms rather than accumulate old conversation indefinitely. Protected by ring.
+enum { InitialReserve = 7680, MaximumReserve = 9600, BufferCapacity = 14400 };
+static size_t reserveFrames = InitialReserve;
+static bool priming = true;
 
 // Only StartIO/StopIO call this, never the real-time sample callback. Notify
 // asynchronously so querying the new property cannot re-enter StartIO/StopIO.
@@ -44,6 +51,7 @@ static void usageChanged(void) {
 static void clearInput(void) {
     pthread_mutex_lock(&ring->mutex);
     ring->head = ring->count = ring->lastWrite = 0;
+    priming = true; reserveFrames = InitialReserve;
     cacheValid = false;
     pthread_mutex_unlock(&ring->mutex);
 }
@@ -156,7 +164,8 @@ static OSStatus property(AudioObjectID object, Address address, UInt32 qualifier
                 {CRISP_MIC_WRITE, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0},
                 {CRISP_MIC_STATUS, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0},
                 {CRISP_MIC_USAGE, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0},
-                {CRISP_MIC_PROBE, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0}};
+                {CRISP_MIC_PROBE, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0},
+                {CRISP_MIC_BUFFER_STATS, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, 0}};
             return copy(out, capacity, size, infos, sizeof(infos));
         }
         case CRISP_MIC_USAGE: {
@@ -174,6 +183,16 @@ static OSStatus property(AudioObjectID object, Address address, UInt32 qualifier
             CrispMicProbeStats stats = {1, atomic_load(&probeEnabled),
                 atomic_load(&probeAccepted), atomic_load(&probeRejected),
                 atomic_load(&probeRead), atomic_load(&probeNonzero)};
+            *(CFDataRef *)out = CFDataCreate(NULL, (const UInt8 *)&stats, sizeof(stats));
+            return noErr;
+        }
+        case CRISP_MIC_BUFFER_STATS: {
+            *size = sizeof(CFPropertyListRef);
+            if (!out) return noErr;
+            if (capacity < *size) return kAudioHardwareBadPropertySizeError;
+            CrispMicBufferStats stats = {1, atomic_load(&probeEnabled),
+                atomic_load(&probeOverflow), atomic_load(&probeUnderflow), atomic_load(&probePriming),
+                atomic_load(&probeContention), atomic_load(&probeExpired)};
             *(CFDataRef *)out = CFDataCreate(NULL, (const UInt8 *)&stats, sizeof(stats));
             return noErr;
         }
@@ -225,7 +244,7 @@ static ULONG releaseRef(void *driver) {
 }
 static OSStatus initialize(Driver driver, AudioServerPlugInHostRef host) {
     if (driver != reference) return kAudioHardwareBadObjectError;
-    if (!ring) ring = CrispRingCreate(4800);
+    if (!ring) ring = CrispRingCreate(BufferCapacity);
     if (!ring) return kAudioHardwareUnspecifiedError;
     pluginHost = host;
     mach_timebase_info_data_t info;
@@ -280,6 +299,8 @@ static OSStatus set(Driver d, AudioObjectID id, pid_t pid, Address a, UInt32 qs,
         if (control.enabled) {
             atomic_store(&probeAccepted, 0); atomic_store(&probeRejected, 0);
             atomic_store(&probeRead, 0); atomic_store(&probeNonzero, 0);
+            atomic_store(&probeOverflow, 0); atomic_store(&probeUnderflow, 0); atomic_store(&probePriming, 0);
+            atomic_store(&probeContention, 0); atomic_store(&probeExpired, 0);
             atomic_store(&probeEnabled, true);
         }
     } else if (a->mSelector == CRISP_MIC_CONTROL) {
@@ -291,6 +312,7 @@ static OSStatus set(Driver d, AudioObjectID id, pid_t pid, Address a, UInt32 qs,
         ring->enabled = control.enabled;
         ring->generation = control.generation;
         ring->head = ring->count = ring->lastWrite = 0;
+        priming = true; reserveFrames = InitialReserve;
         cacheValid = false;
         pthread_mutex_unlock(&ring->mutex);
     } else {
@@ -301,8 +323,11 @@ static OSStatus set(Driver d, AudioObjectID id, pid_t pid, Address a, UInt32 qs,
         for (size_t i = 0; i < 960; ++i) packet.samples[i] = isfinite(packet.samples[i]) ? fmaxf(-1, fminf(1, packet.samples[i])) : 0;
         pthread_mutex_lock(&ring->mutex);
         bool accepted = atomic_load(&running) > 0 && ring->enabled && ring->generation == packet.generation;
-        if (accepted)
+        if (accepted) {
+            if (atomic_load(&probeEnabled) && ring->count + packet.frames > ring->capacity)
+                atomic_fetch_add(&probeOverflow, ring->count + packet.frames - ring->capacity);
             CrispRingPushUnlocked(ring, packet.samples, packet.frames);
+        }
         if (atomic_load(&probeEnabled)) {
             if (accepted) atomic_fetch_add(&probeAccepted, 1);
             else atomic_fetch_add(&probeRejected, 1);
@@ -350,14 +375,32 @@ static OSStatus io(Driver d, AudioObjectID id, AudioObjectID stream, UInt32 c, U
     bool probing = atomic_load(&probeEnabled);
     if (probing) atomic_fetch_add(&probeRead, frames);
     // Real-time: never wait, allocate, convert formats, log, or perform IPC here.
-    if (!ring || pthread_mutex_trylock(&ring->mutex) != 0) { memset(main, 0, frames * 4); return noErr; }
+    if (!ring || pthread_mutex_trylock(&ring->mutex) != 0) {
+        if (probing) atomic_fetch_add(&probeContention, frames);
+        memset(main, 0, frames * 4); return noErr;
+    }
     UInt64 now = mach_absolute_time();
-    if (!atomic_load(&running) || !ring->enabled || !atomic_load(&streamActive) || !ring->lastWrite || now - ring->lastWrite >= expirationTicks) {
-        ring->head = ring->count = 0; cacheValid = false; memset(main, 0, frames * 4);
+    if (!atomic_load(&running) || !ring->enabled || !atomic_load(&streamActive) ||
+        (ring->lastWrite && now - ring->lastWrite >= expirationTicks)) {
+        if (probing && ring->lastWrite && now - ring->lastWrite >= expirationTicks)
+            atomic_fetch_add(&probeExpired, ring->count);
+        ring->head = ring->count = ring->lastWrite = 0; cacheValid = false; priming = true;
+        memset(main, 0, frames * 4);
     } else if (info && cacheValid && info->mInputTime.mSampleTime == cachedTime && cachedFrames == frames) {
         memcpy(main, cached, frames * 4);
     } else {
-        CrispRingTakeUnlocked(ring, main, frames);
+        if (priming && ring->count < reserveFrames) {
+            memset(main, 0, frames * 4);
+            if (probing) atomic_fetch_add(&probePriming, frames);
+        } else {
+            priming = false;
+            size_t read = CrispRingTakeUnlocked(ring, main, frames);
+            if (read < frames) {
+                if (probing) atomic_fetch_add(&probeUnderflow, frames - read);
+                priming = true;
+                reserveFrames = MaximumReserve;
+            }
+        }
         memcpy(cached, main, frames * 4);
         cachedFrames = frames; cachedTime = info ? info->mInputTime.mSampleTime : NAN; cacheValid = info != NULL;
     }

@@ -288,7 +288,7 @@ final class CrispAudioServer: @unchecked Sendable {
     private func controlProbe(_ mode: UInt8, _ connection: NWConnection) throws {
         if mode == 0 {
             let finished = probeMode
-            guard finished != 0 else { throw CrispAudioWire.Failure(reason: "没有进行中的音频测试") }
+            guard finished != 0 else { throw CrispAudioWire.Failure(reason: "没有进行中的音频诊断") }
             probeMode = 0
             probeID = nil
             var result = finished == 2 ? backend.stopProbeInput() : nil
@@ -306,11 +306,13 @@ final class CrispAudioServer: @unchecked Sendable {
             return
         }
         guard probeMode == 0, !session.microphoneEnabled else {
-            throw CrispAudioWire.Failure(reason: "音频测试不能覆盖正在使用的麦克风")
+            throw CrispAudioWire.Failure(reason: "音频诊断不能覆盖正在使用的麦克风")
         }
         if mode == 2 {
             guard microphoneUse == .idle else {
-                sendProbe(AudioProbeReply(mode: mode, state: "error", error: "mini 远程麦克风不可用或正被应用使用"), connection)
+                sendProbe(AudioProbeReply(mode: mode, state: "error", error: microphoneUse == .unavailable
+                    ? "mini 远程麦克风不可用；请安装 Crisp 配套 HAL 1.0.4 及以上后重新连接"
+                    : "mini 有应用正在使用远程麦克风，请结束输入使用后再诊断"), connection)
                 return
             }
             probeMode = mode; probeDeadline = ProcessInfo.processInfo.systemUptime + 18
@@ -353,7 +355,7 @@ final class CrispAudioServer: @unchecked Sendable {
 
     private func sendProbe(_ reply: AudioProbeReply, _ connection: NWConnection) {
         guard let data = try? JSONEncoder().encode(reply), data.count <= 1023 else {
-            closeClient(error: "音频测试结果超过协议限制"); return
+            closeClient(error: "音频诊断结果超过协议限制"); return
         }
         send(.probeReply(data), connection)
     }
@@ -367,7 +369,7 @@ final class CrispAudioServer: @unchecked Sendable {
         }
         recorder?.interval("audio.send_tick_ms")
         if probeMode != 0, now >= probeDeadline {
-            closeClient(error: "音频自动测试超时，已释放输入设备"); return
+            closeClient(error: "音频诊断超时，已释放输入设备"); return
         }
         if state.microphone, session.microphoneExpired(now: now), !starved {
             recorder?.count("mic.starvation_reset")

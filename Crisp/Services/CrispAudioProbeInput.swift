@@ -32,7 +32,7 @@ final class CrispAudioProbeInput {
             throw CrispAudioWire.Failure(reason: "mini 尚未允许 Crisp 读取输入；测试未启动。")
         }
         guard device == 0, let input = CrispAudioDevice.find() else {
-            throw CrispAudioWire.Failure(reason: "远程麦克风未安装或测试已启动")
+            throw CrispAudioWire.Failure(reason: "远程麦克风不可用或测试已启动；请确认 mini 已安装 Crisp 配套 HAL 1.0.4 及以上并重新连接")
         }
         var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsRunning,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
@@ -41,8 +41,8 @@ final class CrispAudioProbeInput {
             throw CrispAudioWire.Failure(reason: "mini 有应用正在使用远程麦克风，请结束输入使用后再测试")
         }
         device = input
-        // 1.0.2 still supports audio. If it lacks probe counters, explicitly
-        // report missing evidence instead of treating zero as measured.
+        // Keep the original probe layout; buffer statistics use a separate
+        // property so older apps can still read the updated driver's counters.
         var probeAddress = AudioObjectPropertyAddress(mSelector: CRISP_MIC_PROBE,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
         if AudioObjectHasProperty(input, &probeAddress) {
@@ -90,6 +90,28 @@ final class CrispAudioProbeInput {
                         stats = AudioProbeStats(halAcceptedPackets: measured.acceptedPackets,
                             halRejectedPackets: measured.rejectedPackets, halReadFrames: measured.readFrames,
                             halNonzeroFrames: measured.nonzeroFrames)
+                    }
+                }
+            }
+            // Optional 1.0.4 extension; the v1 property remains readable by
+            // older apps. Missing extension does not mean zero buffer damage.
+            address.mSelector = CRISP_MIC_BUFFER_STATS
+            raw = nil; size = UInt32(MemoryLayout<UnsafeMutableRawPointer?>.size)
+            if AudioObjectHasProperty(device, &address),
+               AudioObjectGetPropertyData(device, &address, 0, nil, &size, &raw) == noErr, let raw {
+                let data = Unmanaged<CFData>.fromOpaque(raw).takeRetainedValue()
+                if CFGetTypeID(data) == CFDataGetTypeID(), CFDataGetLength(data) == MemoryLayout<CrispMicBufferStats>.size {
+                    var measured = CrispMicBufferStats()
+                    withUnsafeMutableBytes(of: &measured) {
+                        $0.baseAddress!.copyMemory(from: CFDataGetBytePtr(data)!, byteCount: $0.count)
+                    }
+                    if measured.version == 1 {
+                        if stats == nil { stats = AudioProbeStats() }
+                        stats?.halOverflowFrames = measured.overflowFrames
+                        stats?.halUnderflowFrames = measured.underflowFrames
+                        stats?.halPrimingFrames = measured.primingFrames
+                        stats?.halContentionFrames = measured.contentionFrames
+                        stats?.halExpiredFrames = measured.expiredFrames
                     }
                 }
             }

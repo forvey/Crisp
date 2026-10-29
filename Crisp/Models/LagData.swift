@@ -244,6 +244,7 @@ struct LagMessage: Codable, Sendable {
     var snapshot: LagSnapshot?
     var note: String?
     var motion: LagMotionSource?
+    var quality: LagQualityReference?
 }
 
 /// Only numeric evidence from our own test window; never desktop pixels.

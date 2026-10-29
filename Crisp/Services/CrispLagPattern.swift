@@ -9,12 +9,13 @@ import AppKit
     private var expiry: Timer?
     private var motionTimer: Timer?
     private var motionToken: Int?
+    private var qualityToken: Int?
     private var frames: [LagMotionFrame] = []
     private var motionCompletion: ((LagMotionSource) -> Void)?
     private var motionBegan = 0.0
 
     func show(id: String, sequence: Int) {
-        guard motionToken == nil else { return }
+        guard motionToken == nil, qualityToken == nil else { return }
         if window == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 240),
                 styleMask: [.titled], backing: .buffered, defer: false)
@@ -43,14 +44,51 @@ import AppKit
         guard self.id == id else { return }
         finishMotion(completed: false)
         expiry?.invalidate(); expiry = nil
+        qualityToken = nil
         window?.close(); window = nil; self.id = ""
+    }
+
+    func startQuality(id: String, token: Int) throws -> LagQualityReference {
+        guard motionToken == nil, qualityToken == nil else { throw LagError.invalidMessage }
+        let reference = try LagQualityChart.make(token: token)
+        guard let image = NSImage(data: reference.png),
+              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main else {
+            throw LagError.invalidMessage
+        }
+        let size = NSSize(width: Double(LagQualityChart.width) / screen.backingScaleFactor,
+                          height: Double(LagQualityChart.height) / screen.backingScaleFactor)
+        image.size = size
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "画面清晰度诊断 · 结束后关闭"
+        window.isReleasedWhenClosed = false; window.level = .floating
+        window.contentView = QualityView(image: image, size: size)
+        window.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - size.width / 2,
+                                      y: screen.visibleFrame.midY - size.height / 2))
+        self.window?.close(); self.window = window; self.id = id; qualityToken = token
+        window.orderFrontRegardless(); window.displayIfNeeded()
+        let expiry = Timer(timeInterval: 12, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close(id: id) }
+        }
+        self.expiry?.invalidate(); self.expiry = expiry; RunLoop.main.add(expiry, forMode: .common)
+        return reference
+    }
+
+    private final class QualityView: NSView {
+        let image: NSImage
+        init(image: NSImage, size: NSSize) { self.image = image; super.init(frame: NSRect(origin: .zero, size: size)) }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+        override func draw(_ dirtyRect: NSRect) {
+            NSGraphicsContext.current?.imageInterpolation = .none
+            image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1)
+        }
     }
 
     /// The animation runs locally at 30 fps, not in response to per-frame TCP
     /// commands. Evidence records draw() completion, NOT timer firings or proof
     /// of compositor/encoder output. No timer exists before this explicit call.
     func startMotion(id: String, token: Int, completion: @escaping (LagMotionSource) -> Void) {
-        guard motionToken == nil else { return }
+        guard motionToken == nil, qualityToken == nil else { return }
         show(id: id, sequence: 0)
         guard let view = window?.contentView as? PatternView else { return }
         expiry?.invalidate()

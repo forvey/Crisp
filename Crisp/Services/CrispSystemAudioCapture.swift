@@ -187,6 +187,11 @@ final class CrispHardwareAudioBackend: CrispAudioBackend, @unchecked Sendable {
         stats.halRejectedPackets = reader?.stats?.halRejectedPackets
         stats.halReadFrames = reader?.stats?.halReadFrames
         stats.halNonzeroFrames = reader?.stats?.halNonzeroFrames
+        stats.halOverflowFrames = reader?.stats?.halOverflowFrames
+        stats.halUnderflowFrames = reader?.stats?.halUnderflowFrames
+        stats.halPrimingFrames = reader?.stats?.halPrimingFrames
+        stats.halContentionFrames = reader?.stats?.halContentionFrames
+        stats.halExpiredFrames = reader?.stats?.halExpiredFrames
         result?.stats = stats
         return result
     }
@@ -198,8 +203,7 @@ final class CrispHardwareAudioBackend: CrispAudioBackend, @unchecked Sendable {
         if enabled, !microphoneStarted {
             guard let device = CrispAudioDevice.find() else {
                 throw CrispAudioWire.Failure(reason:
-                    "Virtual microphone is missing. Listening does not need it; " +
-                    "install the bundled component to send the MacBook microphone into WeCom.")
+                    "远程麦克风不可用；请在 mini 安装 Crisp 配套 HAL 1.0.4 及以上后重新连接。仅收听不需要此组件。")
             }
             microphone.setFailureHandler(onFailure)
             microphone.start(device: device)

@@ -75,6 +75,29 @@ enum LagLifecycleTests {
         precondition(results[1].valid && results[1].completed && results[1].frames.count >= 60)
         precondition(LagRecorder.now() - motionBegan >= 14.8)
         print("Motion lifecycle passed: autonomous draws, partial stop, stale stop isolation, independent 15-second expiry")
+
+        // Clarity displays the exact generated reference at source-native
+        // pixels. Stop, stale close and independent expiry must release it.
+        func qualityWindow() -> NSWindow? {
+            app.windows.first { $0.title == "画面清晰度诊断 · 结束后关闭" && $0.isVisible }
+        }
+        let reference = try! pattern.startQuality(id: "quality-stop", token: 31)
+        guard reference.valid, let quality = qualityWindow(), let qualityView = quality.contentView else {
+            preconditionFailure("Clarity chart not shown")
+        }
+        let nativeSize = qualityView.convertToBacking(qualityView.bounds).size
+        precondition(Int(nativeSize.width) == LagQualityChart.width && Int(nativeSize.height) == LagQualityChart.height)
+        pattern.close(id: "previous-session")
+        precondition(qualityWindow() != nil)
+        pattern.close(id: "quality-stop")
+        precondition(qualityWindow() == nil)
+        _ = try! pattern.startQuality(id: "quality-expiry", token: 32)
+        let qualityBegan = LagRecorder.now()
+        while qualityWindow() != nil, LagRecorder.now() - qualityBegan < 13 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        precondition(qualityWindow() == nil && LagRecorder.now() - qualityBegan >= 11.8)
+        print("Clarity lifecycle passed: native pixels, stale stop isolation, explicit stop and independent 12-second expiry")
     }
 
     static func maximumDuration(port: UInt16) -> Double {

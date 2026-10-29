@@ -20,6 +20,7 @@ final class CrispLagSession: @unchecked Sendable {
     private var requests = 0
     private var lastPattern = 0.0
     private var motionToken: Int?
+    private var qualityToken: Int?
 
     init(connection: NWConnection,
          attach: @escaping (LagRecorder?) -> Void, finished: @escaping () -> Void) {
@@ -82,7 +83,7 @@ final class CrispLagSession: @unchecked Sendable {
             let recorder = LagRecorder(scope: scope)
             self.recorder = recorder; sampler = LagResourceSampler(); attach(recorder)
             send(LagMessage(kind: "started", id: id, time: now,
-                            note: "resources,audio,pattern-v1,motion-v1; no desktop encoder/decoder counters"))
+                            note: "resources,audio,pattern-v1,motion-v1,quality-v1; no desktop encoder/decoder counters"))
             return
         }
         guard message.id == id, now < deadline else { closeOnQueue(); return }
@@ -101,7 +102,7 @@ final class CrispLagSession: @unchecked Sendable {
             let sessionID = id
             DispatchQueue.main.async { CrispLagPattern.shared.close(id: sessionID) }
         case "motionStart":
-            guard recorder?.scope.screen == true, motionToken == nil,
+            guard recorder?.scope.screen == true, motionToken == nil, qualityToken == nil,
                   let token = message.sequence, (1...4095).contains(token),
                   deadline - now >= 18 else { throw LagError.invalidMessage }
             motionToken = token
@@ -122,6 +123,25 @@ final class CrispLagSession: @unchecked Sendable {
             guard let token = message.sequence, motionToken == token else { return }
             let sessionID = id
             DispatchQueue.main.async { CrispLagPattern.shared.stopMotion(id: sessionID, token: token) }
+        case "qualityStart":
+            guard recorder?.scope.screen == true, motionToken == nil, qualityToken == nil,
+                  let token = message.sequence, (1...4095).contains(token), deadline - now >= 12 else { throw LagError.invalidMessage }
+            qualityToken = token
+            let sessionID = id
+            DispatchQueue.main.async { [weak self] in
+                let reference = try? CrispLagPattern.shared.startQuality(id: sessionID, token: token)
+                guard let self else { return }
+                self.queue.async {
+                    guard !self.closed, self.qualityToken == token else { return }
+                    self.send(LagMessage(kind: "qualityReady", id: sessionID, sequence: token,
+                        note: reference == nil ? "mini 无法生成或显示清晰度参考图。" : nil, quality: reference))
+                }
+            }
+        case "qualityStop":
+            guard let token = qualityToken, message.sequence == token else { return }
+            qualityToken = nil
+            let sessionID = id
+            DispatchQueue.main.async { CrispLagPattern.shared.close(id: sessionID) }
         case "stop": closeOnQueue()
         default: throw LagError.invalidMessage
         }

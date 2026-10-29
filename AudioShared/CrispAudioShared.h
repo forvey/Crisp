@@ -14,6 +14,7 @@
 #define CRISP_MIC_STATUS ((uint32_t)0x636d7374)
 #define CRISP_MIC_USAGE ((uint32_t)0x636d7573)
 #define CRISP_MIC_PROBE ((uint32_t)0x636d7072)
+#define CRISP_MIC_BUFFER_STATS ((uint32_t)0x636d6273)
 #define CRISP_MIC_VERSION 1
 #define CRISP_MIC_RATE 48000
 #define CRISP_MIC_PACKET_FRAMES 960
@@ -28,6 +29,12 @@ typedef struct {
     uint32_t version, enabled;
     uint64_t acceptedPackets, rejectedPackets, readFrames, nonzeroFrames;
 } CrispMicProbeStats;
+// Optional read-only extension. Keep CRISP_MIC_PROBE's v1 layout unchanged so
+// an older app can still diagnose the updated driver.
+typedef struct {
+    uint32_t version, enabled;
+    uint64_t overflowFrames, underflowFrames, primingFrames, contentionFrames, expiredFrames;
+} CrispMicBufferStats;
 typedef struct {
     uint32_t version, frames;
     uint64_t generation;
