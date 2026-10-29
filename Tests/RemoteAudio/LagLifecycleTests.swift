@@ -44,6 +44,37 @@ enum LagLifecycleTests {
         precondition(shown() == nil, "Pattern failed to close without further requests")
         precondition(LagRecorder.now() - began >= 4.8, "Pattern closed before its expiry")
         print("Local pattern passed: sentinel pixels, complementary rows, explicit/stale close and five-second expiry")
+
+        // Motion must draw autonomously without per-frame TCP commands. A
+        // stale stop cannot close it; an explicit stop returns partial numeric
+        // evidence once and leaves no animation running. No screen is captured.
+        var results: [LagMotionSource] = []
+        pattern.startMotion(id: "motion-local", token: 17) { results.append($0) }
+        let started = LagRecorder.now()
+        while LagRecorder.now() - started < 0.35 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        pattern.stopMotion(id: "motion-local", token: 16)
+        pattern.close(id: "previous-session")
+        precondition(shown() != nil && results.isEmpty)
+        pattern.stopMotion(id: "motion-local", token: 17)
+        precondition(shown() == nil && results.count == 1)
+        precondition(results[0].valid && !results[0].completed && results[0].frames.count >= 3)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        precondition(results.count == 1 && shown() == nil, "Cancelled motion timer remained active")
+
+        // A disconnected controller may never send Stop. The independent
+        // 15-second bound must close the window and report at most 512 draws.
+        pattern.startMotion(id: "motion-expiry", token: 18) { results.append($0) }
+        pattern.stopMotion(id: "motion-local", token: 17)
+        let motionBegan = LagRecorder.now()
+        while shown() != nil, LagRecorder.now() - motionBegan < 16 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        precondition(shown() == nil && results.count == 2)
+        precondition(results[1].valid && results[1].completed && results[1].frames.count >= 60)
+        precondition(LagRecorder.now() - motionBegan >= 14.8)
+        print("Motion lifecycle passed: autonomous draws, partial stop, stale stop isolation, independent 15-second expiry")
     }
 
     static func maximumDuration(port: UInt16) -> Double {

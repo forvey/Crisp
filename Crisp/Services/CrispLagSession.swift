@@ -19,6 +19,7 @@ final class CrispLagSession: @unchecked Sendable {
     private var pending = 0
     private var requests = 0
     private var lastPattern = 0.0
+    private var motionToken: Int?
 
     init(connection: NWConnection,
          attach: @escaping (LagRecorder?) -> Void, finished: @escaping () -> Void) {
@@ -81,7 +82,7 @@ final class CrispLagSession: @unchecked Sendable {
             let recorder = LagRecorder(scope: scope)
             self.recorder = recorder; sampler = LagResourceSampler(); attach(recorder)
             send(LagMessage(kind: "started", id: id, time: now,
-                            note: "resources,audio,pattern-v1; no desktop encoder/decoder counters"))
+                            note: "resources,audio,pattern-v1,motion-v1; no desktop encoder/decoder counters"))
             return
         }
         guard message.id == id, now < deadline else { closeOnQueue(); return }
@@ -99,6 +100,28 @@ final class CrispLagSession: @unchecked Sendable {
         case "patternStop":
             let sessionID = id
             DispatchQueue.main.async { CrispLagPattern.shared.close(id: sessionID) }
+        case "motionStart":
+            guard recorder?.scope.screen == true, motionToken == nil,
+                  let token = message.sequence, (1...4095).contains(token),
+                  deadline - now >= 18 else { throw LagError.invalidMessage }
+            motionToken = token
+            let sessionID = id
+            // All start/stop/close operations are submitted from this serial
+            // queue to the main queue in order. A late start cannot overtake close.
+            DispatchQueue.main.async { [weak self] in
+                CrispLagPattern.shared.startMotion(id: sessionID, token: token) { result in
+                    guard let self else { return }
+                    self.queue.async {
+                        guard !self.closed, self.motionToken == token else { return }
+                        self.motionToken = nil
+                        self.send(LagMessage(kind: "motionResult", id: sessionID, motion: result))
+                    }
+                }
+            }
+        case "motionStop":
+            guard let token = message.sequence, motionToken == token else { return }
+            let sessionID = id
+            DispatchQueue.main.async { CrispLagPattern.shared.stopMotion(id: sessionID, token: token) }
         case "stop": closeOnQueue()
         default: throw LagError.invalidMessage
         }

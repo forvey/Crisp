@@ -198,8 +198,7 @@ final class LagResourceSampler {
     }
 }
 
-// Audio v1 remains byte-for-byte unchanged. A separate connection starts with
-// this distinct length-prefixed preface on the SAME existing listener.
+// Diagnostics use a separate connection on the existing audio listener.
 enum LagWire {
     static let hello = Data("SSE-CRISP-DIAGNOSTICS/1".utf8)
     static let limit = 65_536
@@ -244,4 +243,28 @@ struct LagMessage: Codable, Sendable {
     var sequence: Int?
     var snapshot: LagSnapshot?
     var note: String?
+    var motion: LagMotionSource?
+}
+
+/// Only numeric evidence from our own test window; never desktop pixels.
+struct LagMotionFrame: Codable, Sendable {
+    let number: Int
+    let stamp: Double
+}
+struct LagMotionSource: Codable, Sendable {
+    let token: Int
+    let frames: [LagMotionFrame]
+    let completed: Bool
+    let started: Double
+    let ended: Double
+
+    var valid: Bool {
+        guard (1...4095).contains(token), frames.count <= 512,
+              started.isFinite, ended.isFinite, started >= 0, ended >= started else { return false }
+        for (index, frame) in frames.enumerated() {
+            guard frame.number == index + 1, frame.stamp.isFinite, frame.stamp >= started, frame.stamp <= ended else { return false }
+            if index > 0, frame.stamp <= frames[index - 1].stamp { return false }
+        }
+        return frames.isEmpty || frames.last!.stamp - frames.first!.stamp <= 18
+    }
 }
