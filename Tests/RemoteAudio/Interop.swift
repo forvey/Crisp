@@ -47,18 +47,28 @@ final class DiagnosticPeer: @unchecked Sendable {
     private var parser = LagWire.Parser()
     private var messages: [LagMessage] = []
     private var closed = false
-    init(port: UInt16, duration: Double = 3, malformed: Bool = false) {
+    private var sentAt = 0.0
+    private var closedAfter = 0.0
+    init(port: UInt16, duration: Double = 3, malformed: Bool = false, delayBeforeStart: Double = 0) {
         connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: AudioWire.parameters())
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             if case .ready = state {
                 self.connection.send(content: LagWire.framed(LagWire.hello), completion: .contentProcessed { _ in })
                 let message = LagMessage(kind: "start", version: malformed ? 99 : 1, id: self.id, scope: .both, duration: duration)
-                self.connection.send(content: try! LagWire.encode(message), completion: .contentProcessed { _ in })
+                self.queue.asyncAfter(deadline: .now() + delayBeforeStart) {
+                    self.lock.lock(); self.sentAt = LagRecorder.now(); self.lock.unlock()
+                    self.connection.send(content: Self.encoded(message), completion: .contentProcessed { _ in })
+                }
                 self.receive()
             }
         }
         connection.start(queue: queue)
+    }
+    private static func encoded(_ message: LagMessage) -> Data {
+        do { return try LagWire.encode(message) } catch {
+            preconditionFailure("Synthetic diagnostic message could not be encoded: \(error)")
+        }
     }
     private func receive() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, eof, error in
@@ -66,17 +76,19 @@ final class DiagnosticPeer: @unchecked Sendable {
             if let data, let messages = try? self.parser.append(data) {
                 self.lock.lock(); self.messages += messages; self.lock.unlock()
             }
-            if eof || error != nil { self.lock.lock(); self.closed = true; self.lock.unlock() }
-            else { self.receive() }
+            if eof || error != nil {
+                self.lock.lock(); self.closed = true; self.closedAfter = LagRecorder.now() - self.sentAt; self.lock.unlock()
+            } else { self.receive() }
         }
     }
     func count(_ kind: String) -> Int { lock.lock(); defer { lock.unlock() }; return messages.filter { $0.kind == kind }.count }
     func isClosed() -> Bool { lock.lock(); defer { lock.unlock() }; return closed }
+    func elapsed() -> Double { lock.lock(); defer { lock.unlock() }; return closedAfter }
     func cancel() { connection.cancel() }
     func stop(appendRestart: Bool = false) {
-        var data = try! LagWire.encode(LagMessage(kind: "stop", id: id))
+        var data = Self.encoded(LagMessage(kind: "stop", id: id))
         if appendRestart {
-            data += try! LagWire.encode(LagMessage(kind: "start", id: id, scope: .both, duration: 60))
+            data += Self.encoded(LagMessage(kind: "start", id: id, scope: .both, duration: 60))
         }
         connection.send(content: data, completion: .contentProcessed { _ in })
     }
@@ -154,11 +166,14 @@ final class Counter: @unchecked Sendable {
         // Diagnosis with BOTH audio controls off must not start capture, reset
         // the microphone or keep sampling beyond the independently set timeout.
         let resets = backend.snapshot().resets
-        let onlyDiagnostic = DiagnosticPeer(port: testPort, duration: 2)
+        let onlyDiagnostic = DiagnosticPeer(port: testPort, duration: 1.2)
         wait({ onlyDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
-        precondition(!backend.snapshot().active && !backend.snapshot().microphone && backend.snapshot().resets == resets)
+        precondition(!backend.snapshot().active && !backend.snapshot().microphone
+                     && backend.snapshot().resets == resets)
         wait({ onlyDiagnostic.count("sample") >= 1 })
         wait({ onlyDiagnostic.isClosed() && !backend.snapshot().diagnosing })
+        FileHandle.standardError.write(Data("Diagnostic deadline: requested 1.2 s, observed \(onlyDiagnostic.elapsed()) s\n".utf8))
+        precondition(onlyDiagnostic.elapsed() < 1.7, "Diagnostic deadline waited for the next one-second sample tick")
         let samplesAfterStop = onlyDiagnostic.count("sample")
         Thread.sleep(forTimeInterval: 1.1)
         precondition(onlyDiagnostic.count("sample") == samplesAfterStop, "Expired diagnostics kept sampling")
@@ -167,12 +182,14 @@ final class Counter: @unchecked Sendable {
         wait({ stoppedDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
         stoppedDiagnostic.stop(appendRestart: true)
         wait({ stoppedDiagnostic.isClosed() && !backend.snapshot().diagnosing })
-        precondition(stoppedDiagnostic.count("started") == 1, "Frames after stop restarted an orphan recorder")
+        precondition(stoppedDiagnostic.count("started") == 1,
+                     "Frames after stop restarted an orphan recorder")
 
         // The actual controller session collects both ends and clock bounds,
         // then times out. No manual test-only client substitutes its lifecycle.
         var finalDiagnostic: LagReport?
-        let actualDiagnostic = LagSession(host: "127.0.0.1", scope: .both, pid: getpid(), port: testPort, duration: 3) { report, active, _ in
+        let actualDiagnostic = LagSession(host: "127.0.0.1", scope: .both,
+                                          pid: getpid(), port: testPort, duration: 3) { report, active, _ in
             if !active { finalDiagnostic = report }
         }
         actualDiagnostic.start()
@@ -184,6 +201,15 @@ final class Counter: @unchecked Sendable {
         precondition(!finalDiagnostic!.local.isEmpty && !finalDiagnostic!.remote.isEmpty && !finalDiagnostic!.clocks.isEmpty)
         wait({ !backend.snapshot().diagnosing })
         precondition(!backend.snapshot().active && !backend.snapshot().microphone)
+        let invalidDuration = DiagnosticPeer(port: testPort, duration: 61)
+        wait({ invalidDuration.isClosed() })
+        precondition(invalidDuration.count("started") == 0 && !backend.snapshot().diagnosing)
+        var maximumDiagnosticSeconds: Double?
+        if CommandLine.arguments.contains("--full-lifecycle") {
+            maximumDiagnosticSeconds = LagLifecycleTests.maximumDuration(port: testPort)
+            wait({ !backend.snapshot().diagnosing })
+            MainActor.assumeIsolated { LagLifecycleTests.pattern() }
+        }
         let client = AudioTransport() // Actual committed ScreenSharingEnhancer code, not a substitute.
         let welcomed = DispatchSemaphore(value: 0)
         let heard = Counter()
@@ -291,11 +317,15 @@ final class Counter: @unchecked Sendable {
         idleHandshakeExpires()
         wait({ !backend.snapshot().active })
         server.shutdown()
-        let report: [String: Any] = ["result": "passed", "realControllerSource": true, "hardwareOpened": false,
+        var report: [String: Any] = ["result": "passed", "realControllerSource": true, "hardwareOpened": false,
             "duplexSeconds": duration, "cpuPercentOneCore": (cpuAfter - cpuBefore) / duration * 100,
             "processPeakRSSBytes": after.ru_maxrss, "downlinkPacketsInFiveSeconds": received.count(),
             "uplinkPacketsTotal": backend.snapshot().received, "PCMBitrateEachDirection": 384000,
             "first50PacketSpanSeconds": heard.span(), "listenWithoutVirtualInput": true]
+        report["diagnosticDeadlineRequestedSeconds"] = 1.2
+        report["diagnosticDeadlineObservedSeconds"] = onlyDiagnostic.elapsed()
+        report["localPatternLifecycleValidated"] = maximumDiagnosticSeconds != nil
+        if let maximumDiagnosticSeconds { report["maximumDiagnosticObservedSeconds"] = maximumDiagnosticSeconds }
         print(String(data: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), encoding: .utf8)!)
     }
 }

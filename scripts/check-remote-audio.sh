@@ -22,6 +22,7 @@ xcrun swiftc -O -swift-version 5 -parse-as-library \
     Crisp/Models/CrispAudioWire.swift Crisp/Services/CrispAudioServer.swift \
     Crisp/Models/LagData.swift Crisp/Services/CrispLagSession.swift Crisp/Services/CrispLagPattern.swift \
     "$CONTROLLER/Sources/ScreenSharingEnhancer/AudioWire.swift" \
-    "$CONTROLLER/Sources/ScreenSharingEnhancer/LagSession.swift" Tests/RemoteAudio/Interop.swift \
+    "$CONTROLLER/Sources/ScreenSharingEnhancer/LagSession.swift" \
+    Tests/RemoteAudio/Interop.swift Tests/RemoteAudio/LagLifecycleTests.swift \
     -o build/audio-evidence/interop
-build/audio-evidence/interop | tee build/audio-evidence/interop.json
+build/audio-evidence/interop "$@" | tee build/audio-evidence/interop.json

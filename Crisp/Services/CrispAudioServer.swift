@@ -189,8 +189,7 @@ final class CrispAudioServer: @unchecked Sendable {
             default: break
             }
         }
-        do { try process(hello, connection); receive(connection) }
-        catch { closeClient(error: error.localizedDescription); return }
+        do { try process(hello, connection); receive(connection) } catch { closeClient(error: error.localizedDescription); return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(20), leeway: .milliseconds(1))
         timer.setEventHandler { [weak self] in self?.tick() }

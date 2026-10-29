@@ -108,7 +108,13 @@ struct LagSnapshot: Codable, Sendable {
 /// polling. Discover the small process whitelist once at explicit session start.
 final class LagResourceSampler {
     private var processes: [(Int32, String)] = []
-    private var previous: [Int32: (Double, UInt64, UInt64, UInt64)] = [:]
+    private struct PreviousUsage {
+        let stamp: Double
+        let cpu: UInt64
+        let read: UInt64
+        let write: UInt64
+    }
+    private var previous: [Int32: PreviousUsage] = [:]
     private var previousCPU: [UInt32]?
 
     init(extraPID: Int32? = nil) {
@@ -118,8 +124,21 @@ final class LagResourceSampler {
         let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
         for pid in pids.prefix(max(0, min(Int(count), pids.count))) where pid > 0 {
             var bytes = [CChar](repeating: 0, count: 1024)
-            guard proc_name(pid, &bytes, UInt32(bytes.count)) > 0 else { continue }
-            let name = String(decoding: bytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            let name: String
+            if proc_name(pid, &bytes, UInt32(bytes.count)) > 0 {
+                guard let value = String(bytes: bytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+                                         encoding: .utf8) else { continue }
+                name = value
+            } else {
+                // macOS may hide a system process name while still exposing its
+                // executable path. Keep matching roles so sample() can report
+                // unreadable resource counters rather than silently omitting them.
+                var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+                guard proc_pidpath(pid, &path, UInt32(path.count)) > 0,
+                      let value = String(bytes: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+                                         encoding: .utf8) else { continue }
+                name = URL(fileURLWithPath: value).lastPathComponent
+            }
             if names.contains(name) || pid == extraPID { processes.append((pid, name)) }
         }
     }
@@ -139,12 +158,12 @@ final class LagResourceSampler {
             }
             let cpu = usage.ri_user_time + usage.ri_system_time
             let old = previous[pid]
-            previous[pid] = (now, cpu, usage.ri_diskio_bytesread, usage.ri_diskio_byteswritten)
-            let percent = old.flatMap { now > $0.0 && cpu >= $0.1
-                ? Double(cpu - $0.1) / 1e9 / (now - $0.0) * 100 : nil }
+            previous[pid] = PreviousUsage(stamp: now, cpu: cpu, read: usage.ri_diskio_bytesread, write: usage.ri_diskio_byteswritten)
+            let percent = old.flatMap { now > $0.stamp && cpu >= $0.cpu
+                ? Double(cpu - $0.cpu) / 1e9 / (now - $0.stamp) * 100 : nil }
             return LagProcess(pid: pid, name: name, cpu: percent, residentBytes: usage.ri_phys_footprint,
-                diskReadBytes: old.map { usage.ri_diskio_bytesread >= $0.2 ? usage.ri_diskio_bytesread - $0.2 : 0 },
-                diskWriteBytes: old.map { usage.ri_diskio_byteswritten >= $0.3 ? usage.ri_diskio_byteswritten - $0.3 : 0 },
+                diskReadBytes: old.map { usage.ri_diskio_bytesread >= $0.read ? usage.ri_diskio_bytesread - $0.read : 0 },
+                diskWriteBytes: old.map { usage.ri_diskio_byteswritten >= $0.write ? usage.ri_diskio_byteswritten - $0.write : 0 },
                 unavailable: nil)
         }
         var swap = xsw_usage()

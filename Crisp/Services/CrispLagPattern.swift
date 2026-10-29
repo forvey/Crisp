@@ -47,8 +47,13 @@ import AppKit
             for row in 0..<2 {
                 for col in 0..<12 {
                     let color: NSColor
-                    if col < 2 { color = .magenta } else if col >= 10 { color = .cyan }
-                    else { color = (((sequence >> (col - 2)) & 1) == row) ? .white : .black }
+                    if col < 2 {
+                        color = .magenta
+                    } else if col >= 10 {
+                        color = .cyan
+                    } else {
+                        color = (((sequence >> (col - 2)) & 1) == row) ? .white : .black
+                    }
                     color.setFill()
                     NSRect(x: Double(col) * width, y: Double(row) * bounds.height / 2,
                            width: width, height: bounds.height / 2).fill()

@@ -12,6 +12,7 @@ final class CrispLagSession: @unchecked Sendable {
     private var recorder: LagRecorder?
     private var sampler: LagResourceSampler?
     private var timer: DispatchSourceTimer?
+    private var deadlineTimer: DispatchSourceTimer?
     private var deadline = 0.0
     private var id = ""
     private var closed = false
@@ -32,13 +33,20 @@ final class CrispLagSession: @unchecked Sendable {
     private func startOnQueue() {
         guard !closed else { return }
         connection.stateUpdateHandler = { [weak self] phase in
-            switch phase { case .failed, .cancelled, .waiting: self?.close(); default: break }
+            switch phase {
+            case .failed, .cancelled, .waiting: self?.close()
+            default: break
+            }
         }
         deadline = LagRecorder.now() + 5
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in self?.sample() }
         self.timer = timer; timer.resume()
+        let timeout = DispatchSource.makeTimerSource(queue: queue)
+        timeout.schedule(deadline: .now() + 5)
+        timeout.setEventHandler { [weak self] in self?.closeOnQueue() }
+        deadlineTimer = timeout; timeout.resume()
         receive()
     }
 
@@ -69,6 +77,7 @@ final class CrispLagSession: @unchecked Sendable {
                   let scope = message.scope, let duration = message.duration,
                   duration.isFinite, duration >= 1, duration <= 60 else { throw LagError.invalidMessage }
             id = message.id; deadline = now + duration
+            deadlineTimer?.schedule(deadline: .now() + duration)
             let recorder = LagRecorder(scope: scope)
             self.recorder = recorder; sampler = LagResourceSampler(); attach(recorder)
             send(LagMessage(kind: "started", id: id, time: now,
@@ -126,6 +135,7 @@ final class CrispLagSession: @unchecked Sendable {
     private func closeOnQueue() {
         guard !closed else { return }
         closed = true; timer?.cancel(); timer = nil
+        deadlineTimer?.cancel(); deadlineTimer = nil
         recorder?.stop(); attach(nil); recorder = nil; sampler = nil
         let sessionID = id
         DispatchQueue.main.async { CrispLagPattern.shared.close(id: sessionID) }
