@@ -4,7 +4,10 @@ import Darwin
 
 /// Synthetic backend: no HAL device, process tap, microphone or speaker is opened.
 final class SyntheticAudio: CrispAudioBackend, @unchecked Sendable {
-    struct Snapshot { let active: Bool; let microphone: Bool; let received: Int; let resets: Int; let diagnosing: Bool }
+    struct Snapshot {
+        let active: Bool; let microphone: Bool; let received: Int; let resets: Int; let diagnosing: Bool
+        let probeStarts: Int; let permissionPending: Bool
+    }
     var onFailure: @Sendable (String) -> Void = { _ in }
     var onMicrophoneUse: @Sendable (CrispAudioWire.MicrophoneUse) -> Void = { _ in }
     private let lock = NSLock()
@@ -15,6 +18,31 @@ final class SyntheticAudio: CrispAudioBackend, @unchecked Sendable {
     private var microphoneAvailable = true
     private var inputInUse = false
     private var diagnosing = false
+    private var probePermission: Bool? = true
+    private var pendingPermission: (@Sendable (String?) -> Void)?
+    private var probeSamples: [Float]?
+    private var probeStarts = 0
+    func setProbePermission(_ allowed: Bool?) { lock.lock(); probePermission = allowed; lock.unlock() }
+    func prepareProbeInput(_ completion: @escaping @Sendable (String?) -> Void) {
+        lock.lock()
+        guard let allowed = probePermission else { pendingPermission = completion; lock.unlock(); return }
+        lock.unlock()
+        completion(allowed ? nil : "Synthetic input permission denied")
+    }
+    func resolveProbePermission() {
+        lock.lock(); let completion = pendingPermission; pendingPermission = nil; lock.unlock()
+        completion?(nil)
+    }
+    func startProbeInput() throws {
+        lock.lock(); probeSamples = []; probeStarts += 1; lock.unlock()
+        setInputInUse(true)
+    }
+    func stopProbeInput() -> AudioProbeResult? {
+        lock.lock(); let samples = probeSamples; probeSamples = nil; lock.unlock()
+        guard let samples else { return nil }
+        setInputInUse(false)
+        return AudioProbeResult.analyze(samples, rate: 24000, lost: 0)
+    }
     func setDiagnostics(_ recorder: LagRecorder?) { lock.lock(); diagnosing = recorder != nil; lock.unlock() }
     let downlink = CrispAudioPCM.bytes((0..<480).map { sin(Float($0) * 0.05) * 0.1 })
     let uplink = Data(repeating: 17, count: 960)
@@ -31,7 +59,12 @@ final class SyntheticAudio: CrispAudioBackend, @unchecked Sendable {
         lock.unlock()
         onMicrophoneUse(use)
     }
-    func stop() { lock.lock(); active = false; enabled = false; lock.unlock() }
+    func stop() {
+        lock.lock()
+        if probeSamples != nil { inputInUse = false }
+        active = false; enabled = false; probeSamples = nil
+        lock.unlock()
+    }
     func setMicrophone(_ on: Bool) throws {
         lock.lock(); defer { lock.unlock() }
         if on, !microphoneAvailable { throw CrispAudioWire.Failure(reason: "Synthetic virtual microphone missing") }
@@ -41,13 +74,15 @@ final class SyntheticAudio: CrispAudioBackend, @unchecked Sendable {
     func setMicrophoneAvailable(_ available: Bool) { lock.lock(); microphoneAvailable = available; lock.unlock() }
     func microphonePCM(_ bytes: Data) {
         lock.lock(); defer { lock.unlock() }
-        precondition(enabled && active && bytes == uplink, "Ungated or corrupt upstream audio")
+        precondition(enabled && active && (bytes == uplink || probeSamples != nil), "Ungated or corrupt upstream audio")
+        if probeSamples != nil { probeSamples! += CrispAudioPCM.floats(bytes) }
         received += 1
     }
     func downlinkPCM() -> Data { downlink }
     func snapshot() -> Snapshot {
         lock.lock(); defer { lock.unlock() }
-        return Snapshot(active: active, microphone: enabled, received: received, resets: resetCount, diagnosing: diagnosing)
+        return Snapshot(active: active, microphone: enabled, received: received, resets: resetCount, diagnosing: diagnosing,
+                        probeStarts: probeStarts, permissionPending: pendingPermission != nil)
     }
 }
 
@@ -359,13 +394,14 @@ final class Counter: @unchecked Sendable {
         let probeStopped = DispatchSemaphore(value: 0)
         let probeRejected = DispatchSemaphore(value: 0)
         let probePackets = Counter()
+        var measuredProbe: AudioProbeReply?
         let expectedProbe = Set((0..<64).map { AudioProbeSignal.pcm($0) })
         probeClient.onReady = { probeReady.signal() }
         probeClient.onPCM = { if expectedProbe.contains($0) { probePackets.increment() } }
         probeClient.onProbeReply = { data in
             let reply = try! JSONDecoder().decode(AudioProbeReply.self, from: data)
             if reply.state == "ready" { probeStarted.signal() }
-            if reply.state == "result" { probeStopped.signal() }
+            if reply.state == "result" { measuredProbe = reply; probeStopped.signal() }
             if reply.state == "error" { probeRejected.signal() }
         }
         probeClient.connect(host: "127.0.0.1", port: testPort)
@@ -375,9 +411,56 @@ final class Counter: @unchecked Sendable {
         wait({ probePackets.count() >= 10 })
         probeClient.probe(0)
         precondition(probeStopped.wait(timeout: .now() + 5) == .success)
+        precondition((measuredProbe?.stats?.sentPackets ?? 0) >= 10)
         probeClient.probe(2)
         precondition(probeRejected.wait(timeout: .now() + 5) == .success)
         precondition(!backend.snapshot().microphone)
+        probeClient.disconnect()
+        wait({ !backend.snapshot().active })
+
+        // Permission denial is not silent audio. A late permission answer
+        // after cancellation must never reopen the virtual input.
+        backend.setInputInUse(false)
+        let probeIdle = DispatchSemaphore(value: 0)
+        let probeInUse = DispatchSemaphore(value: 0)
+        probeClient.onMicrophoneUse = {
+            if $0 == .idle { probeIdle.signal() }
+            if $0 == .inUse { probeInUse.signal() }
+        }
+        probeClient.connect(host: "127.0.0.1", port: testPort)
+        precondition(probeReady.wait(timeout: .now() + 5) == .success)
+        precondition(probeIdle.wait(timeout: .now() + 5) == .success)
+        backend.setProbePermission(false)
+        probeClient.probe(2)
+        precondition(probeRejected.wait(timeout: .now() + 5) == .success)
+        precondition(backend.snapshot().probeStarts == 0)
+        backend.setProbePermission(nil)
+        probeClient.probe(2)
+        wait({ backend.snapshot().permissionPending })
+        probeClient.disconnect()
+        wait({ !backend.snapshot().active })
+        backend.resolveProbePermission()
+        backend.setProbePermission(true)
+        probeClient.connect(host: "127.0.0.1", port: testPort)
+        precondition(probeReady.wait(timeout: .now() + 5) == .success)
+        precondition(backend.snapshot().probeStarts == 0)
+
+        // Real TCP carries the known sequence into the synthetic input;
+        // received counts and captured samples must describe the same data.
+        probeClient.probe(2)
+        precondition(probeStarted.wait(timeout: .now() + 5) == .success)
+        precondition(probeInUse.wait(timeout: .now() + 5) == .success)
+        let receivedBeforeProbe = backend.snapshot().received
+        probeClient.sendMicrophone(true)
+        for sequence in 0..<25 {
+            probeClient.sendPCM(AudioProbeSignal.pcm(sequence))
+            usleep(20000)
+        }
+        wait({ backend.snapshot().received == receivedBeforeProbe + 25 })
+        probeClient.sendMicrophone(false); probeClient.probe(0)
+        precondition(probeStopped.wait(timeout: .now() + 5) == .success)
+        precondition(measuredProbe?.result?.stats?.receivedPackets == 25)
+        precondition((measuredProbe?.result?.signalMS ?? 0) > 400)
         probeClient.disconnect()
         wait({ !backend.snapshot().active })
 

@@ -158,15 +158,37 @@ final class CrispHardwareAudioBackend: CrispAudioBackend, @unchecked Sendable {
         try capture.start()
         usage.start(onMicrophoneUse)
     }
-    func stop() { _ = probeInput?.stop(analyze: false); probeInput = nil; usage.stop(); microphoneStarted = false; microphone.stop(); capture.stop() }
-    func shutdown() { _ = probeInput?.stop(analyze: false); probeInput = nil; usage.stop(); microphoneStarted = false; microphone.stop(waitForMute: true); capture.stop() }
+    func stop() {
+        if let probeInput {
+            _ = probeInput.stop(analyze: false); _ = microphone.finishProbeStats()
+        }
+        probeInput = nil; usage.stop(); microphoneStarted = false; microphone.stop(); capture.stop()
+    }
+    func shutdown() {
+        if let probeInput {
+            _ = probeInput.stop(analyze: false); _ = microphone.finishProbeStats()
+        }
+        probeInput = nil; usage.stop(); microphoneStarted = false; microphone.stop(waitForMute: true); capture.stop()
+    }
     func startProbeInput() throws {
         let reader = CrispAudioProbeInput()
-        try reader.start(); probeInput = reader
+        microphone.beginProbeStats()
+        do { try reader.start(); probeInput = reader }
+        catch { _ = microphone.finishProbeStats(); throw error }
+    }
+    func prepareProbeInput(_ completion: @escaping @Sendable (String?) -> Void) {
+        CrispAudioProbeInput.prepare(completion)
     }
     func stopProbeInput() -> AudioProbeResult? {
         let reader = probeInput; probeInput = nil
-        return reader?.stop()
+        var result = reader?.stop()
+        var stats = microphone.finishProbeStats() ?? AudioProbeStats()
+        stats.halAcceptedPackets = reader?.stats?.halAcceptedPackets
+        stats.halRejectedPackets = reader?.stats?.halRejectedPackets
+        stats.halReadFrames = reader?.stats?.halReadFrames
+        stats.halNonzeroFrames = reader?.stats?.halNonzeroFrames
+        result?.stats = stats
+        return result
     }
     func setMicrophone(_ enabled: Bool) throws {
         guard enabled else {

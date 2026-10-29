@@ -46,6 +46,15 @@ static void readPacket(AudioServerPlugInDriverRef d, float expected, double samp
     assert((*d)->DoIOOperation(d,2,3,1,kAudioServerPlugInIOOperationReadInput,480,&info,samples,NULL)==noErr);
     for (size_t i=0;i<480;++i) assert(fabsf(samples[i]-expected)<0.00001);
 }
+static CrispMicProbeStats probeStats(AudioServerPlugInDriverRef d) {
+    AudioObjectPropertyAddress a = address(CRISP_MIC_PROBE, kAudioObjectPropertyScopeGlobal);
+    CFDataRef data = NULL; UInt32 bytes = 0;
+    assert((*d)->GetPropertyData(d,2,getpid(),&a,0,NULL,sizeof(data),&bytes,&data)==noErr);
+    CrispMicProbeStats result = {0};
+    assert(CFDataGetLength(data)==sizeof(result));
+    CFDataGetBytes(data,CFRangeMake(0,sizeof(result)),(UInt8 *)&result);
+    CFRelease(data); return result;
+}
 int main(int argc, char **argv) {
     void *handle = argc > 1 ? dlopen(argv[1], RTLD_NOW | RTLD_LOCAL) : NULL;
     if (argc > 1) assert(handle);
@@ -101,6 +110,33 @@ int main(int argc, char **argv) {
     assert((*d)->StartIO(d,2,3)==noErr); waitNotifications(3);
     readPacket(d,0,4320);
     assert((*d)->StopIO(d,2,3)==noErr); waitNotifications(4);
+    // A successful property write can still be rejected by generation or
+    // disabled input. Measure actual acceptance, only during an explicit test.
+    CrispMicProbeStats before = probeStats(d);
+    assert(before.enabled==0 && before.acceptedPackets==0 && before.readFrames==0);
+    a=address(CRISP_MIC_PROBE,kAudioObjectPropertyScopeGlobal);
+    Boolean writable=false;
+    assert((*d)->IsPropertySettable(d,2,getpid(),&a,&writable)==noErr && writable);
+    CrispMicProbeControl probe = {1,1};
+    assert(inject(d,CRISP_MIC_PROBE,&probe,sizeof(probe))==noErr);
+    assert((*d)->StartIO(d,2,4)==noErr);
+    control(d,true,20);
+    writePacket(d,0.25,19); // API succeeds, driver rejects old generation.
+    writePacket(d,0.25,20);
+    readPacket(d,0.25,0); readPacket(d,0.25,480); readPacket(d,0,960);
+    CrispMicProbeStats measured = probeStats(d);
+    assert(measured.acceptedPackets==1 && measured.rejectedPackets==1);
+    assert(measured.readFrames==1440 && measured.nonzeroFrames==960);
+    probe.enabled=0;
+    assert(inject(d,CRISP_MIC_PROBE,&probe,sizeof(probe))==noErr);
+    writePacket(d,0.5,20); readPacket(d,0.5,1440);
+    CrispMicProbeStats stopped = probeStats(d);
+    assert(stopped.enabled==0 && stopped.acceptedPackets==1 && stopped.readFrames==1440);
+    // Last-reader stop is a failsafe even if the test client disappears.
+    probe.enabled=1;
+    assert(inject(d,CRISP_MIC_PROBE,&probe,sizeof(probe))==noErr);
+    assert((*d)->StopIO(d,2,4)==noErr);
+    assert(probeStats(d).enabled==0 && probeStats(d).acceptedPackets==0);
     CrispAudioRing *ring=CrispRingCreate(4800); float input[480]={0};
     pthread_mutex_lock(&ring->mutex);
     assert(CrispRingPushRealtime(ring,input,480)==0); // Real-time path never waits on the worker.

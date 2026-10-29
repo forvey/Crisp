@@ -5,8 +5,8 @@
 <key>CFBundleExecutable</key><string>CrispRemoteMicrophone</string>
 <key>CFBundleName</key><string>远程麦克风</string>
 <key>CFBundlePackageType</key><string>BNDL</string>
-<key>CFBundleVersion</key><string>3</string>
-<key>CFBundleShortVersionString</key><string>1.0.2</string>
+<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>1.0.3</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>CFPlugInDynamicRegistration</key><false/>
 <key>CFPlugInFactories</key><dict><key>D28B9B4D-7CB4-47B5-973D-72D849A84C66</key><string>CrispRemoteMicrophone_Create</string></dict>

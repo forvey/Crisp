@@ -135,6 +135,7 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
         var packets: [(Data, TimeInterval)] = []
         var failure: @Sendable (String) -> Void = { _ in }
         var recorder: LagRecorder?
+        var probe: AudioProbeStats?
     }
     private let lock = NSLock()
     private var state = State()
@@ -143,6 +144,20 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
     private var applied: UInt64 = 0
     private var resampler: CrispAudioResampler?
     private var converted: [Float] = []
+    func beginProbeStats() {
+        lock.lock()
+        state.probe = AudioProbeStats(queueDrops: 0, staleDrops: 0, pendingPackets: 0, halWrites: 0)
+        lock.unlock()
+    }
+    func finishProbeStats() -> AudioProbeStats? {
+        queue.sync {
+            lock.lock(); defer { lock.unlock() }
+            var result = state.probe
+            if result != nil { result!.pendingPackets! += state.packets.count }
+            state.probe = nil
+            return result
+        }
+    }
     func setDiagnostics(_ recorder: LagRecorder?) {
         lock.lock(); state.recorder = recorder; lock.unlock()
     }
@@ -176,13 +191,18 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard state.active, state.enabled else { return }
-        if state.packets.count == 5 { state.recorder?.count("mic.queue_drop"); state.packets.removeFirst() }
+        if state.packets.count == 5 {
+            state.recorder?.count("mic.queue_drop")
+            if state.probe != nil { state.probe!.queueDrops! += 1 }
+            state.packets.removeFirst()
+        }
         state.packets.append((data, ProcessInfo.processInfo.systemUptime))
     }
 
     func stop(waitForMute: Bool = false) {
         lock.lock()
         state.active = false; state.enabled = false; state.generation &+= 1
+        if state.probe != nil { state.probe!.pendingPackets! += state.packets.count }
         state.packets.removeAll()
         lock.unlock()
         let done = DispatchSemaphore(value: 0)
@@ -211,7 +231,15 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
             guard snapshot.enabled, let packet else { return }
             let age = ProcessInfo.processInfo.systemUptime - packet.1
             snapshot.recorder?.value("mic.queue_age_ms", age * 1000)
-            guard age <= 0.1 else { snapshot.recorder?.count("mic.stale_drop"); return }
+            guard age <= 0.1 else {
+                snapshot.recorder?.count("mic.stale_drop")
+                if snapshot.probe != nil {
+                    lock.lock()
+                    if state.probe != nil { state.probe!.staleDrops! += 1 }
+                    lock.unlock()
+                }
+                return
+            }
             converted += try resampler?.convert(CrispAudioPCM.floats(packet.0)) ?? []
             while converted.count >= 960 {
                 lock.lock()
@@ -227,6 +255,11 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
                 try CrispAudioDevice.send(withUnsafeBytes(of: &frame) { Data($0) },
                                           selector: CrispAudioDevice.write, device: snapshot.device)
                 snapshot.recorder?.count("mic.hal_packets_written")
+                if snapshot.probe != nil {
+                    lock.lock()
+                    if state.probe != nil { state.probe!.halWrites! += 1 }
+                    lock.unlock()
+                }
             }
         } catch {
             timer?.cancel(); timer = nil
