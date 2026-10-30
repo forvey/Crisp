@@ -88,6 +88,7 @@ struct LagProcess: Codable, Sendable {
     let diskReadBytes: UInt64?
     let diskWriteBytes: UInt64?
     let unavailable: String?
+    var cpuInterval: Double? = nil
 }
 struct LagResources: Codable, Sendable {
     let processes: [LagProcess]
@@ -95,6 +96,7 @@ struct LagResources: Codable, Sendable {
     let swapBytes: UInt64?
     let systemCPU: Double?
     let network: String
+    var cpuInterval: Double? = nil
 }
 struct LagSnapshot: Codable, Sendable {
     var stamp: Double
@@ -116,6 +118,7 @@ final class LagResourceSampler {
     }
     private var previous: [Int32: PreviousUsage] = [:]
     private var previousCPU: [UInt32]?
+    private var previousCPUStamp: Double?
 
     init(extraPID: Int32? = nil) {
         let names = Set(["Screen Sharing", "ScreenSharingEnhancer", "WindowServer",
@@ -164,7 +167,7 @@ final class LagResourceSampler {
             return LagProcess(pid: pid, name: name, cpu: percent, residentBytes: usage.ri_phys_footprint,
                 diskReadBytes: old.map { usage.ri_diskio_bytesread >= $0.read ? usage.ri_diskio_bytesread - $0.read : 0 },
                 diskWriteBytes: old.map { usage.ri_diskio_byteswritten >= $0.write ? usage.ri_diskio_byteswritten - $0.write : 0 },
-                unavailable: nil)
+                unavailable: nil, cpuInterval: old.map { now - $0.stamp })
         }
         var swap = xsw_usage()
         var size = MemoryLayout<xsw_usage>.size
@@ -179,14 +182,17 @@ final class LagResourceSampler {
             }
         }
         var busy: Double?
+        var cpuInterval: Double?
         if status == KERN_SUCCESS {
             let ticks = [cpu.cpu_ticks.0, cpu.cpu_ticks.1, cpu.cpu_ticks.2, cpu.cpu_ticks.3]
             if let old = previousCPU {
+                cpuInterval = previousCPUStamp.map { now - $0 }
                 let deltas = zip(ticks, old).map { Double($0 &- $1) }
                 let total = deltas.reduce(0, +)
                 if total > 0 { busy = (total - deltas[Int(CPU_STATE_IDLE)]) / total * 100 }
             }
             previousCPU = ticks
+            previousCPUStamp = now
         }
         let network: String
         if let path {
@@ -194,7 +200,8 @@ final class LagResourceSampler {
                 path.usesInterfaceType(.wiredEthernet) ? "ethernet" : path.usesInterfaceType(.loopback) ? "loopback" : "other"
         } else { network = "unknown" }
         return LagResources(processes: samples, thermal: ProcessInfo.processInfo.thermalState.rawValue,
-                            swapBytes: available ? swap.xsu_used : nil, systemCPU: busy, network: network)
+                            swapBytes: available ? swap.xsu_used : nil, systemCPU: busy, network: network,
+                            cpuInterval: cpuInterval)
     }
 }
 

@@ -86,6 +86,7 @@ final class LagTraceCommand: @unchecked Sendable {
     private let process = Process()
     private let queue: DispatchQueue
     private var readers: [DispatchSourceRead] = []
+    private var handles: [FileHandle] = []
     private var timeout: DispatchSourceTimer?
     private var buffers = [Data(), Data()]
     private var byteCount = 0
@@ -96,40 +97,53 @@ final class LagTraceCommand: @unchecked Sendable {
     init(queue: DispatchQueue, line: @escaping (String) -> Void, exit: @escaping (String) -> Void) {
         self.queue = queue; self.line = line; self.exit = exit
     }
-    func start(path: String, arguments: [String], seconds: Double = 25) {
+    func start(path: String, arguments: [String], seconds: Double = 25, lineBuffered: Bool = false) {
         guard !stopped else { return }
         process.executableURL = URL(fileURLWithPath: path); process.arguments = arguments
         process.environment = ProcessInfo.processInfo.environment.merging(["LC_ALL": "C"]) { _, right in right }
         process.standardInput = FileHandle.nullDevice
-        let pipes = [Pipe(), Pipe()]
-        process.standardOutput = pipes[0]; process.standardError = pipes[1]
+        let errors = Pipe()
+        let output: FileHandle
+        if lineBuffered {
+            // nettop buffers CSV until exit when stdout is a pipe. A raw PTY
+            // makes libc flush each line, without a shell, helper process or
+            // repeated nettop launches. No terminal input is attached.
+            var master: Int32 = -1, slave: Int32 = -1
+            guard openpty(&master, &slave, nil, nil, nil) == 0 else { exit("unavailable"); return }
+            var settings = termios()
+            guard tcgetattr(slave, &settings) == 0 else {
+                Darwin.close(master); Darwin.close(slave); exit("unavailable"); return
+            }
+            cfmakeraw(&settings)
+            guard tcsetattr(slave, TCSANOW, &settings) == 0 else {
+                Darwin.close(master); Darwin.close(slave); exit("unavailable"); return
+            }
+            _ = fcntl(master, F_SETFD, FD_CLOEXEC)
+            _ = fcntl(slave, F_SETFD, FD_CLOEXEC)
+            handles = [FileHandle(fileDescriptor: master, closeOnDealloc: true), errors.fileHandleForReading]
+            output = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
+        } else {
+            let pipe = Pipe()
+            handles = [pipe.fileHandleForReading, errors.fileHandleForReading]
+            output = pipe.fileHandleForWriting
+        }
+        process.standardOutput = output; process.standardError = errors.fileHandleForWriting
+        defer { output.closeFile(); errors.fileHandleForWriting.closeFile() }
         process.terminationHandler = { [weak self] child in
             self?.queue.async { [weak self] in
                 guard let self, !self.stopped else { return }
+                self.drain()
+                guard !self.stopped else { return }
                 self.exit(child.terminationStatus == 0 ? "exited" : "unavailable")
-                // Data already in the pipe can still be read before its EOF.
             }
         }
         do { try process.run() }
-        catch { exit("unavailable"); stop(); return }
-        for (index, pipe) in pipes.enumerated() {
-            pipe.fileHandleForWriting.closeFile()
-            let handle = pipe.fileHandleForReading
+        catch { handles.forEach { $0.closeFile() }; handles = []; exit("unavailable"); stop(); return }
+        for (index, handle) in handles.enumerated() {
+            _ = fcntl(handle.fileDescriptor, F_SETFL, fcntl(handle.fileDescriptor, F_GETFL) | O_NONBLOCK)
             let reader = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: queue)
             reader.setEventHandler { [weak self] in
-                guard let self, !self.stopped else { return }
-                var bytes = [UInt8](repeating: 0, count: 8192)
-                let count = Darwin.read(handle.fileDescriptor, &bytes, bytes.count)
-                if count <= 0 { self.readers[index].cancel(); return }
-                self.byteCount += count
-                guard self.byteCount <= 262_144 else { self.exit("truncated"); self.stop(); return }
-                self.buffers[index].append(contentsOf: bytes.prefix(count))
-                while let end = self.buffers[index].firstIndex(of: 10) {
-                    let value = String(data: self.buffers[index][..<end], encoding: .utf8)
-                    self.buffers[index].removeSubrange(...end)
-                    if index == 0, let value { self.line(value) }
-                }
-                if self.buffers[index].count > 16_384 { self.exit("truncated"); self.stop() }
+                self?.readAvailable(index: index, handle: handle)
             }
             reader.setCancelHandler { handle.closeFile() }
             readers.append(reader); reader.resume()
@@ -139,10 +153,37 @@ final class LagTraceCommand: @unchecked Sendable {
         timeout.setEventHandler { [weak self] in self?.exit("timeout"); self?.stop() }
         self.timeout = timeout; timeout.resume()
     }
+    private func readAvailable(index: Int, handle: FileHandle) {
+        guard !stopped, !readers[index].isCancelled else { return }
+        var bytes = [UInt8](repeating: 0, count: 8192)
+        while !stopped {
+            let count = Darwin.read(handle.fileDescriptor, &bytes, bytes.count)
+            if count < 0, errno == EINTR { continue }
+            if count < 0, errno == EAGAIN || errno == EWOULDBLOCK { return }
+            if count <= 0 { readers[index].cancel(); return } // PTY EOF can be EIO.
+            byteCount += count
+            guard byteCount <= 262_144 else { exit("truncated"); stop(); return }
+            buffers[index].append(contentsOf: bytes.prefix(count))
+            while !stopped, let end = buffers[index].firstIndex(of: 10) {
+                let value = String(data: buffers[index][..<end], encoding: .utf8)
+                buffers[index].removeSubrange(...end)
+                if index == 0, let value { line(value) }
+            }
+            if !stopped, buffers[index].count > 16_384 { exit("truncated"); stop() }
+        }
+    }
+    func drain() {
+        // Nonblocking: keep already-delivered rows on early stop, never wait
+        // for another sample or invent its time from process termination.
+        for (index, handle) in handles.enumerated() {
+            guard !stopped else { return }
+            readAvailable(index: index, handle: handle)
+        }
+    }
     func stop() {
         guard !stopped else { return }
         stopped = true; timeout?.cancel(); timeout = nil
-        readers.forEach { $0.cancel() }; readers.removeAll(); buffers = [Data(), Data()]
+        readers.forEach { $0.cancel() }; readers.removeAll(); handles = []; buffers = [Data(), Data()]
         process.terminationHandler = nil
         if process.isRunning {
             process.terminate()
@@ -200,7 +241,7 @@ final class LagScreenCollector {
             self.trace.tcpState = state
             if state == "truncated" { self.trace.truncated = true }
         })
-        net?.start(path: "/usr/bin/nettop", arguments: args)
+        net?.start(path: "/usr/bin/nettop", arguments: args, lineBuffered: true)
         logs = LagTraceCommand(queue: queue, line: { [weak self] line in
             guard let self, !self.ended,
                   let event = LagScreenParser.event(line, started: self.trace.started, wall: self.trace.wallTime,
@@ -220,6 +261,7 @@ final class LagScreenCollector {
     func snapshot() -> LagScreenTrace { trace }
     @discardableResult func stop() -> LagScreenTrace {
         guard !ended else { return trace }
+        net?.drain(); logs?.drain()
         ended = true; trace.ended = LagRecorder.now()
         net?.stop(); logs?.stop(); net = nil; logs = nil
         if trace.tcpState == "collecting" { trace.tcpState = trace.tcp.isEmpty ? "noMatchingConnection" : "stopped" }
