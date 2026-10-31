@@ -12,6 +12,12 @@ final class CrispLagSession: @unchecked Sendable {
     private var recorder: LagRecorder?
     private var sampler: LagResourceSampler?
     private var screenCollector: LagScreenCollector?
+    private var networkCollector: LagNetworkCollector?
+    private var hostSampler: LagHostSampler?
+    private var collectCause = false
+    private var causeBegan: Double?
+    private var causeDone = false
+    private var lastSample: Double?
     private var timer: DispatchSourceTimer?
     private var deadlineTimer: DispatchSourceTimer?
     private var deadline = 0.0
@@ -84,7 +90,7 @@ final class CrispLagSession: @unchecked Sendable {
             let recorder = LagRecorder(scope: scope)
             self.recorder = recorder; sampler = LagResourceSampler(); attach(recorder)
             send(LagMessage(kind: "started", id: id, time: now,
-                            note: "resources,audio,pattern-v1,motion-v1,motion-v2,quality-v2,screen-evidence-v1; no desktop encoder/decoder counters"))
+                            note: "resources,audio,pattern-v1,motion-v1,motion-v2,quality-v2,screen-evidence-v1,motion-cause-v1; no desktop encoder/decoder counters"))
             return
         }
         guard message.id == id, now < deadline else { closeOnQueue(); return }
@@ -103,11 +109,13 @@ final class CrispLagSession: @unchecked Sendable {
             let sessionID = id
             DispatchQueue.main.async { CrispLagPattern.shared.close(id: sessionID) }
         case "motionStart", "motionPrepare":
-            guard recorder?.scope.screen == true, motionToken == nil, qualityToken == nil,
+            guard recorder?.scope.screen == true, causeBegan == nil, motionToken == nil, qualityToken == nil,
                   let token = message.sequence, (1...4095).contains(token),
                   deadline - now >= 20 else { throw LagError.invalidMessage }
             motionToken = token
-            if message.collectScreenTrace == true {
+            collectCause = message.collectCause == true
+            if collectCause, message.kind == "motionStart" { startCause() }
+            if !collectCause, message.collectScreenTrace == true {
                 screenCollector = LagScreenCollector(queue: queue,
                     peer: LagScreenParser.peer(connection.currentPath?.remoteEndpoint ?? connection.endpoint), server: true)
             }
@@ -120,13 +128,16 @@ final class CrispLagSession: @unchecked Sendable {
                     self.queue.async {
                         guard !self.closed, self.motionToken == token else { return }
                         self.motionToken = nil
-                        let trace = self.screenCollector?.stop(); self.screenCollector = nil
-                        self.send(LagMessage(kind: "motionResult", id: sessionID, motion: result, screenTrace: trace))
+                        let trace = self.screenCollector?.stop(), network = self.networkCollector?.stop()
+                        self.screenCollector = nil; self.networkCollector = nil; self.hostSampler = nil
+                        if self.collectCause { self.causeDone = true; self.sampler = nil }
+                        self.send(LagMessage(kind: "motionResult", id: sessionID, motion: result, screenTrace: trace, network: network))
                     }
                 }
             }
         case "motionRun":
             guard let token = message.sequence, motionToken == token, deadline - now >= 16 else { throw LagError.invalidMessage }
+            if collectCause, causeBegan == nil { startCause() }
             let sessionID = id
             DispatchQueue.main.async { CrispLagPattern.shared.runMotion(id: sessionID, token: token) }
         case "motionStop":
@@ -134,7 +145,7 @@ final class CrispLagSession: @unchecked Sendable {
             let sessionID = id
             DispatchQueue.main.async { CrispLagPattern.shared.stopMotion(id: sessionID, token: token) }
         case "qualityStart":
-            guard recorder?.scope.screen == true, motionToken == nil, qualityToken == nil,
+            guard recorder?.scope.screen == true, causeBegan == nil, motionToken == nil, qualityToken == nil,
                   let token = message.sequence, (1...4095).contains(token), deadline - now >= 16 else { throw LagError.invalidMessage }
             qualityToken = token
             let sessionID = id
@@ -161,12 +172,25 @@ final class CrispLagSession: @unchecked Sendable {
         guard !closed else { return }
         requests = 0
         guard LagRecorder.now() < deadline else { closeOnQueue(); return }
+        guard !causeDone else { return }
         if var snapshot = recorder?.snapshot() {
             let began = LagRecorder.now()
             snapshot.resources = sampler?.sample(path: connection.currentPath)
+            snapshot.host = hostSampler?.sample(interface: networkCollector?.interface,
+                timerLateMS: lastSample.map { max(0, began - $0 - 1) * 1000 } ?? 0)
+            lastSample = began
             recorder?.duration("diagnostic.sample_ms", since: began)
-            send(LagMessage(kind: "sample", id: id, snapshot: snapshot))
+            let recorder = self.recorder
+            DispatchQueue.main.async { recorder?.duration("diagnostic.main_queue_ms", since: began) }
+            send(LagMessage(kind: "sample", id: id, snapshot: snapshot,
+                screenTrace: causeBegan == nil ? nil : screenCollector?.snapshot(), network: networkCollector?.snapshot()))
         }
+    }
+    private func startCause() {
+        causeBegan = LagRecorder.now(); hostSampler = LagHostSampler()
+        let peer = LagScreenParser.peer(connection.currentPath?.remoteEndpoint ?? connection.endpoint)
+        networkCollector = LagNetworkCollector(queue: queue, peer: peer)
+        screenCollector = LagScreenCollector(queue: queue, peer: peer, server: true, allTransports: true)
     }
 
     private func send(_ message: LagMessage) {
@@ -189,6 +213,7 @@ final class CrispLagSession: @unchecked Sendable {
         guard !closed else { return }
         closed = true; timer?.cancel(); timer = nil
         screenCollector?.stop(); screenCollector = nil
+        networkCollector?.stop(); networkCollector = nil; hostSampler = nil
         deadlineTimer?.cancel(); deadlineTimer = nil
         recorder?.stop(); attach(nil); recorder = nil; sampler = nil
         let sessionID = id

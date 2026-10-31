@@ -104,6 +104,7 @@ struct LagSnapshot: Codable, Sendable {
     var counters: [String: Int] = [:]
     var dropped = 0
     var resources: LagResources?
+    var host: LagHostReading?
 }
 
 /// Native counters, one sample/second; no shell command, nettop or all-process
@@ -254,8 +255,10 @@ struct LagMessage: Codable, Sendable {
     var note: String?
     var motion: LagMotionSource?
     var quality: LagQualityReference?
+    var collectCause: Bool?
     var collectScreenTrace: Bool?
     var screenTrace: LagScreenTrace?
+    var network: LagNetworkTrace?
 }
 
 // Numeric, bounded evidence for the actual native screen connection. Counters
@@ -273,6 +276,8 @@ struct LagTCPReading: Codable, Sendable {
     let rttMS: Double?
     let receiveBuffer: UInt64?
     let sendWindow: UInt64?
+    var transport: String? = nil
+    var process: String? = nil
 }
 struct LagSystemEvent: Codable, Sendable {
     // Nil when the wall clock changed or the OS did not expose an event time.
@@ -291,15 +296,93 @@ struct LagScreenTrace: Codable, Sendable {
     var tcpState = "notStarted"
     var logState = "notStarted"
     var truncated = false
+    var allTransports: Bool? = nil
 
     var valid: Bool {
         started.isFinite && started >= 0 && (ended.map { $0.isFinite && $0 >= started } ?? true) &&
-        tcp.count <= 128 && events.count <= 256 && notes.count <= 12 && notes.allSatisfy { $0.utf8.count <= 512 } &&
+        tcp.count <= (allTransports == true ? 192 : 128) && events.count <= 256 && notes.count <= 12 && notes.allSatisfy { $0.utf8.count <= 512 } &&
         tcp.allSatisfy { $0.stamp.isFinite && $0.stamp >= started && $0.connection.utf8.count <= 256 &&
-            $0.interface.utf8.count <= 32 && ($0.rttMS.map { $0.isFinite && $0 >= 0 } ?? true) } &&
+            $0.interface.utf8.count <= 32 && ($0.rttMS.map { $0.isFinite && $0 >= 0 } ?? true) &&
+            ($0.transport.map { ["tcp", "udp"].contains($0) } ?? true) && ($0.process.map { $0.utf8.count <= 128 } ?? true) } &&
         events.allSatisfy { $0.receivedAt.isFinite && ($0.stamp.map(\.isFinite) ?? true) &&
             ["wifiScanStart", "wifiScanEnd", "gpuAllocationFailure"].contains($0.kind) &&
             ($0.durationMS.map { $0.isFinite && $0 >= 0 && $0 <= 60_000 } ?? true) }
+    }
+}
+
+// Optional additions keep older reports readable. Absent data is never zero.
+struct LagHostReading: Codable, Sendable {
+    var interval: Double?
+    var sampleMS: Double = 0
+    var timerLateMS: Double = 0
+    var memoryPressure: Int?
+    var swapInBytes: UInt64?
+    var swapOutBytes: UInt64?
+    var pageOutBytes: UInt64?
+    var compressedBytes: UInt64?
+    var gpu: [LagGPUReading] = []
+    var busyProcesses: [LagProcess] = []
+    var readableProcesses = 0
+    var unreadableProcesses = 0
+    var processLimitReached = false
+    var wifi: LagWiFiReading?
+    var interface: LagInterfaceReading?
+    var valid: Bool {
+        sampleMS.isFinite && sampleMS >= 0 && timerLateMS.isFinite && timerLateMS >= 0 &&
+        (interval.map { $0.isFinite && $0 >= 0 } ?? true) && gpu.count <= 16 && busyProcesses.count <= 6 &&
+        gpu.allSatisfy { $0.device.utf8.count <= 64 && $0.field.utf8.count <= 64 && $0.percent.isFinite && (0...100).contains($0.percent) } &&
+        busyProcesses.allSatisfy { $0.name.utf8.count <= 512 && ($0.cpu.map { $0.isFinite && $0 >= 0 } ?? true) }
+    }
+}
+struct LagGPUReading: Codable, Sendable {
+    let device: String
+    let field: String
+    let percent: Double
+}
+struct LagWiFiReading: Codable, Sendable {
+    let interface: String
+    let channel: Int?
+    let band: Int?
+    let width: Int?
+    let rssi: Int?
+    let noise: Int?
+    let transmitMbps: Double?
+}
+struct LagInterfaceReading: Codable, Sendable {
+    let name: String
+    let bytesIn: UInt64
+    let bytesOut: UInt64
+    let errorsIn: UInt64
+    let errorsOut: UInt64
+}
+struct LagProbeReading: Codable, Sendable {
+    let stamp: Double
+    let sequence: Int
+    let rttMS: Double?
+}
+struct LagProbeTrace: Codable, Sendable {
+    var state = "notStarted"
+    var readings: [LagProbeReading] = []
+    var transmitted: Int?
+    var received: Int?
+}
+struct LagNetworkTrace: Codable, Sendable {
+    let started: Double
+    var ended: Double?
+    var interface: String?
+    var routeState = "notStarted"
+    var peer = LagProbeTrace()
+    var gateway = LagProbeTrace()
+    var notes: [String] = []
+    var valid: Bool {
+        started.isFinite && (ended.map { $0.isFinite && $0 >= started } ?? true) &&
+        (interface.map { $0.utf8.count <= 32 } ?? true) && routeState.utf8.count <= 32 && notes.count <= 12 &&
+        notes.allSatisfy { $0.utf8.count <= 512 } && [peer, gateway].allSatisfy { probe in
+            probe.state.utf8.count <= 32 && probe.readings.count <= 64 &&
+            (probe.transmitted.map { (0...30).contains($0) } ?? true) && (probe.received.map { (0...30).contains($0) } ?? true) &&
+            probe.readings.allSatisfy { $0.stamp.isFinite && $0.stamp >= started && (0..<64).contains($0.sequence) &&
+                ($0.rttMS.map { $0.isFinite && $0 >= 0 && $0 <= 60_000 } ?? true) }
+        }
     }
 }
 

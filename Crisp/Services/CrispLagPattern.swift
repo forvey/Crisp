@@ -162,24 +162,24 @@ import AppKit
         var sequence = 0 { didSet { needsDisplay = true } }
         var motionToken: Int?
         var frameDidDraw: ((Int) -> Void)?
-        private var frame = 0
+        private var frameNumber = 0
         private var advancing = false
 
-        func previewMotion() { frame = 1; advancing = false; needsDisplay = true }
-        func resetMotion() { frame = 0; advancing = false }
+        func previewMotion() { frameNumber = 1; advancing = false; needsDisplay = true }
+        func resetMotion() { frameNumber = 0; advancing = false }
 
         func advanceMotion() {
-            guard frame < 512 else { return }
+            guard frameNumber < 512 else { return }
             advancing = true; needsDisplay = true
             displayIfNeeded()
         }
         override func draw(_ dirtyRect: NSRect) {
             let record = motionToken != nil && advancing
-            if record { frame += 1; advancing = false }
-            let value = motionToken.map { ($0 << 12) | frame } ?? sequence
+            if record { frameNumber += 1; advancing = false }
+            let value = motionToken.map { ($0 << 12) | frameNumber } ?? sequence
             let bits = motionToken == nil ? 8 : 24
             NSColor.black.setFill(); bounds.fill()
-            let width = bounds.width / Double(bits + 4)
+            let width = bounds.width / CGFloat(bits + 4)
             let codeHeight = motionToken == nil ? bounds.height : bounds.height / 2
             for row in 0..<2 {
                 for col in 0..<(bits + 4) {
@@ -192,7 +192,7 @@ import AppKit
                         color = (((value >> (col - 2)) & 1) == row) ? .white : .black
                     }
                     color.setFill()
-                    NSRect(x: Double(col) * width, y: Double(row) * codeHeight / 2,
+                    NSRect(x: CGFloat(col) * width, y: CGFloat(row) * codeHeight / 2,
                            width: width, height: codeHeight / 2).fill()
                 }
             }
@@ -201,11 +201,11 @@ import AppKit
                 // number counter. This is a small synthetic scene, not video.
                 for index in 0..<10 {
                     NSColor(white: index % 2 == 0 ? 0.9 : 0.3, alpha: 1).setFill()
-                    let x = (Double(index) * bounds.width / 10 + Double(frame) * 4).truncatingRemainder(dividingBy: bounds.width)
+                    let x = (CGFloat(index) * bounds.width / 10 + CGFloat(frameNumber) * 4).truncatingRemainder(dividingBy: bounds.width)
                     NSRect(x: x, y: codeHeight + 8, width: 20, height: bounds.height - codeHeight - 16).fill()
                 }
             }
-            if record { frameDidDraw?(frame) }
+            if record { frameDidDraw?(frameNumber) }
         }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Network
 import Darwin
 
@@ -249,6 +250,46 @@ final class Counter: @unchecked Sendable {
         precondition(!finalDiagnostic!.local.isEmpty && !finalDiagnostic!.remote.isEmpty && !finalDiagnostic!.clocks.isEmpty)
         wait({ !backend.snapshot().diagnosing })
         precondition(!backend.snapshot().active && !backend.snapshot().microphone)
+        // Real controller + real Crisp pattern, on this machine only. No
+        // business screen capture or physical audio; pattern preparation must
+        // not consume the shared 15-second collection window.
+        MainActor.assumeIsolated { NSApplication.shared.setActivationPolicy(.prohibited) }
+        var causeReport: LagReport?, latestCause: LagReport?
+        var prepared = false, run = false, stopping = false
+        var cause: LagSession!
+        cause = LagSession(host: "127.0.0.1", scope: .screen,
+                           pid: getpid(), port: testPort, duration: 30) { report, active, ready in
+            latestCause = report
+            if ready && !prepared {
+                prepared = true
+                cause.motion(51, start: true) { precondition($0 == nil) }
+            }
+            if active, report.motion?.source != nil, !stopping {
+                stopping = true; cause.finishMotion("Combined diagnostic complete")
+            }
+            if !active { causeReport = report }
+        }
+        cause.start()
+        let causeBegan = LagRecorder.now()
+        while causeReport == nil && LagRecorder.now() - causeBegan < 23 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            if prepared && !run && LagRecorder.now() - causeBegan >= 2 {
+                precondition(latestCause?.localNetwork == nil && latestCause?.remoteNetwork == nil,
+                             "Preparation must not consume network probes")
+                precondition(latestCause?.local.allSatisfy { $0.host == nil } == true)
+                run = true; cause.runMotion(51)
+            }
+        }
+        precondition(causeReport?.causeCompleted == true, "Final combined evidence was lost at shutdown")
+        precondition(causeReport!.local.filter { $0.host != nil }.count >= 10)
+        precondition(causeReport!.local.last?.resources != nil, "Cleanup must not replace resource evidence with an empty sample")
+        precondition(causeReport!.remote.filter { $0.host != nil }.count >= 10)
+        precondition(causeReport!.remoteNetwork?.ended != nil && causeReport!.remoteScreenTrace?.ended != nil)
+        precondition(causeReport!.motion?.source?.completed == true && causeReport!.motion!.source!.frames.count >= 60)
+        precondition(causeReport!.quality == nil)
+        wait({ !backend.snapshot().diagnosing })
+        precondition(!backend.snapshot().active && !backend.snapshot().microphone)
+        print("Combined diagnostic passed: preparation isolation, real pattern, two resource streams, final evidence and cleanup")
         let invalidDuration = DiagnosticPeer(port: testPort, duration: 61)
         wait({ invalidDuration.isClosed() })
         precondition(invalidDuration.count("started") == 0 && !backend.snapshot().diagnosing)

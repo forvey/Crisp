@@ -6,6 +6,7 @@ import Darwin
 /// event categories; never raw system logs, Wi-Fi names or unrelated sockets.
 struct LagScreenParser {
     private var columns: [String] = []
+    private var process: String?
     static let fields = "interface,state,bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win"
 
     static func peer(_ endpoint: NWEndpoint?) -> String? {
@@ -24,24 +25,31 @@ struct LagScreenParser {
         guard let split = value.lastIndex(of: ":"), let port = Int(value[value.index(after: split)...]) else { return nil }
         return (normalized(String(value[..<split])), port)
     }
-    mutating func tcp(_ line: String, peer: String, server: Bool, stamp: Double) -> LagTCPReading? {
+    mutating func tcp(_ line: String, peer: String, server: Bool, stamp: Double, allTransports: Bool = false) -> LagTCPReading? {
         let cells = line.components(separatedBy: ",")
         if cells.first == "", cells.contains("bytes_in") { columns = cells; return nil }
-        guard let name = cells.first, name.hasPrefix("tcp"), cells.count == columns.count else { return nil }
+        guard let name = cells.first, cells.count == columns.count else { return nil }
+        guard name.hasPrefix("tcp") || (allTransports && name.hasPrefix("udp")) else {
+            if !name.isEmpty { process = String(name.prefix(128)) }
+            return nil
+        }
+        let udp = name.hasPrefix("udp")
         let pair = name.dropFirst(5).components(separatedBy: "<->")
         guard pair.count == 2, let local = Self.endpoint(pair[0]), let remote = Self.endpoint(pair[1]),
-              remote.0 == Self.normalized(peer), (server ? local.1 : remote.1) == 5900 else { return nil }
+              remote.0 == Self.normalized(peer),
+              allTransports || (server ? local.1 : remote.1) == 5900 else { return nil }
         func field(_ key: String) -> String? { columns.firstIndex(of: key).map { cells[$0] } }
-        guard field("state") == "Established",
+        guard (udp || field("state") == "Established"),
               let incoming = field("bytes_in").flatMap(UInt64.init),
               let outgoing = field("bytes_out").flatMap(UInt64.init) else { return nil }
         let rtt = field("rtt_avg").flatMap { Double($0.replacingOccurrences(of: " ms", with: "")) }
-        return LagTCPReading(stamp: stamp, connection: String(name.prefix(256)),
+        return LagTCPReading(stamp: stamp, connection: String((allTransports ? "\(process ?? "unknown") \(name)" : name).prefix(256)),
             interface: String((field("interface") ?? "").prefix(32)), bytesIn: incoming, bytesOut: outgoing,
-            retransmitBytes: field("re-tx").flatMap(UInt64.init),
-            duplicateBytes: field("rx_dupe").flatMap(UInt64.init), outOfOrderBytes: field("rx_ooo").flatMap(UInt64.init),
-            rttMS: rtt.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
-            receiveBuffer: field("rcvsize").flatMap(UInt64.init), sendWindow: field("tx_win").flatMap(UInt64.init))
+            retransmitBytes: udp ? nil : field("re-tx").flatMap(UInt64.init),
+            duplicateBytes: udp ? nil : field("rx_dupe").flatMap(UInt64.init), outOfOrderBytes: udp ? nil : field("rx_ooo").flatMap(UInt64.init),
+            rttMS: udp ? nil : rtt.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
+            receiveBuffer: udp ? nil : field("rcvsize").flatMap(UInt64.init), sendWindow: udp ? nil : field("tx_win").flatMap(UInt64.init),
+            transport: allTransports ? (udp ? "udp" : "tcp") : nil, process: allTransports ? process : nil)
     }
 
     static func event(_ line: String, started: Double, wall: Date, now: Double, date: Date) -> LagSystemEvent? {
@@ -135,6 +143,7 @@ final class LagTraceCommand: @unchecked Sendable {
                 self.drain()
                 guard !self.stopped else { return }
                 self.exit(child.terminationStatus == 0 ? "exited" : "unavailable")
+                self.stop()
             }
         }
         do { try process.run() }
@@ -207,9 +216,10 @@ final class LagScreenCollector {
     private var logs: LagTraceCommand?
     private var ended = false
 
-    init(queue: DispatchQueue, peer: String?, pid: Int32? = nil, server: Bool = false) {
+    init(queue: DispatchQueue, peer: String?, pid: Int32? = nil, server: Bool = false, allTransports: Bool = false) {
         self.queue = queue
         trace = LagScreenTrace(started: LagRecorder.now(), wallTime: Date())
+        trace.allTransports = allTransports ? true : nil
         trace.notes = [
             "屏幕 TCP 按约 1 秒采样；非逐包时间，不能单独归因 100 ms 停顿。",
             "未申请管理员权限、未抓包；缺少逐包收发与重传时间、源端实际合成和苹果编码/解码耗时。",
@@ -220,9 +230,13 @@ final class LagScreenCollector {
             trace.notes.append("未取得实际对端 IP 或为回环测试，未启动系统采集。")
             return
         }
-        var args = ["-L", "25", "-s", "1", "-n", "-x", "-m", "tcp", "-J", LagScreenParser.fields]
+        var args = ["-L", "25", "-s", "1", "-n", "-x", "-J", LagScreenParser.fields]
+        if !allTransports { args += ["-m", "tcp"] }
         if server { args += ["-p", "screensharingd", "-p", "ScreensharingAgent"] }
-        else if let pid, pid > 0 { args += ["-p", String(pid)] }
+        else if let pid, pid > 0 {
+            args += ["-p", String(pid)]
+            if allTransports { args += ["-p", "ScreensharingAgent", "-p", "screensharingd"] }
+        }
         else {
             trace.tcpState = "unavailable"; trace.logState = "notStarted"
             trace.notes.append("未取得被测窗口进程，未扩大为全机连接采集。")
@@ -231,8 +245,8 @@ final class LagScreenCollector {
         trace.tcpState = "collecting"; trace.logState = "collecting"
         net = LagTraceCommand(queue: queue, line: { [weak self] line in
             guard let self, !self.ended,
-                  let sample = self.parser.tcp(line, peer: peer, server: server, stamp: LagRecorder.now()) else { return }
-            guard self.trace.tcp.count < 128 else {
+                  let sample = self.parser.tcp(line, peer: peer, server: server, stamp: LagRecorder.now(), allTransports: allTransports) else { return }
+            guard self.trace.tcp.count < (allTransports ? 192 : 128) else {
                 self.trace.truncated = true; self.trace.tcpState = "truncated"; self.net?.stop(); return
             }
             self.trace.tcp.append(sample)
@@ -266,7 +280,9 @@ final class LagScreenCollector {
         net?.stop(); logs?.stop(); net = nil; logs = nil
         if trace.tcpState == "collecting" { trace.tcpState = trace.tcp.isEmpty ? "noMatchingConnection" : "stopped" }
         if trace.logState == "collecting" { trace.logState = "stopped" }
-        if trace.tcp.isEmpty { trace.notes.append("未读到本对端 TCP 5900 连接；可能权限受限或使用其他传输，不能当作网络正常。") }
+        if trace.tcp.isEmpty { trace.notes.append(trace.allTransports == true
+            ? "未匹配到所选客户端/系统共享服务与该对端的 TCP/UDP；其他进程、转发地址或权限限制仍可能遗漏。"
+            : "未读到本对端 TCP 5900 连接；可能权限受限或使用其他传输，不能当作网络正常。") }
         return trace
     }
     deinit { net?.stop(); logs?.stop() }
