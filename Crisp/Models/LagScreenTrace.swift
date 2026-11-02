@@ -95,6 +95,7 @@ final class LagTraceCommand: @unchecked Sendable {
     private let queue: DispatchQueue
     private var readers: [DispatchSourceRead] = []
     private var handles: [FileHandle] = []
+    private var inputWriter: FileHandle?
     private var timeout: DispatchSourceTimer?
     private var buffers = [Data(), Data()]
     private var byteCount = 0
@@ -112,10 +113,11 @@ final class LagTraceCommand: @unchecked Sendable {
         process.standardInput = FileHandle.nullDevice
         let errors = Pipe()
         let output: FileHandle
+        var inputReader: FileHandle?
         if lineBuffered {
             // nettop buffers CSV until exit when stdout is a pipe. A raw PTY
             // makes libc flush each line, without a shell, helper process or
-            // repeated nettop launches. No terminal input is attached.
+            // repeated nettop launches. No user terminal input is attached.
             var master: Int32 = -1, slave: Int32 = -1
             guard openpty(&master, &slave, nil, nil, nil) == 0 else { exit("unavailable"); return }
             var settings = termios()
@@ -130,13 +132,20 @@ final class LagTraceCommand: @unchecked Sendable {
             _ = fcntl(slave, F_SETFD, FD_CLOEXEC)
             handles = [FileHandle(fileDescriptor: master, closeOnDealloc: true), errors.fileHandleForReading]
             output = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
+            // nettop still polls stdin in CSV mode. /dev/null is always at
+            // EOF and makes it spin at a full core despite 1 Hz output.
+            // Keep an empty pipe open so that poll sleeps between samples.
+            let input = Pipe()
+            inputReader = input.fileHandleForReading
+            inputWriter = input.fileHandleForWriting
+            process.standardInput = inputReader
         } else {
             let pipe = Pipe()
             handles = [pipe.fileHandleForReading, errors.fileHandleForReading]
             output = pipe.fileHandleForWriting
         }
         process.standardOutput = output; process.standardError = errors.fileHandleForWriting
-        defer { output.closeFile(); errors.fileHandleForWriting.closeFile() }
+        defer { inputReader?.closeFile(); output.closeFile(); errors.fileHandleForWriting.closeFile() }
         process.terminationHandler = { [weak self] child in
             self?.queue.async { [weak self] in
                 guard let self, !self.stopped else { return }
@@ -192,6 +201,7 @@ final class LagTraceCommand: @unchecked Sendable {
     func stop() {
         guard !stopped else { return }
         stopped = true; timeout?.cancel(); timeout = nil
+        inputWriter?.closeFile(); inputWriter = nil
         readers.forEach { $0.cancel() }; readers.removeAll(); handles = []; buffers = [Data(), Data()]
         process.terminationHandler = nil
         if process.isRunning {
