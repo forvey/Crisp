@@ -678,6 +678,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             || CoreBrightnessService.shared.trueToneAvailable {
             blocks.append(block("effects") { ScreenEffectsView() })
         }
+        let virtualDisplaysHead = block("vdhead") { VirtualDisplaysHeadBlock(state: state) }
+        virtualDisplaysHead.liveInFlight = true
+        blocks.append(virtualDisplaysHead)
+        blocks.append(block("vdrows", isOpen: { state.showVirtualDisplays }) {
+            VirtualDisplayView()
+                .padding(.leading, 8)
+        })
         blocks.append(block("presets") {
             VStack(alignment: .leading, spacing: 0) {
                 SectionDivider()
@@ -701,17 +708,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 EdgeCrossingRow()
                 DisconnectBuiltinRow()
-                ExpandableRowStateful(icon: "display.2", iconActive: false,
-                                      label: "Virtual Displays", state: state, key: \.showVirtualDisplays)
             }
             .padding(.leading, 8)
         }
-        toolsA.liveInFlight = true   // Virtual Displays chevron
         blocks.append(toolsA)
-        blocks.append(block("vdrows", isOpen: { state.showTools && state.showVirtualDisplays }) {
-            VirtualDisplayView()
-                .padding(.leading, 16)
-        })
         let toolsB = block("toolsB", isOpen: { [weak dm] in
             state.showTools && (dm?.displays.count ?? 0) > 1
         }) {
@@ -793,7 +793,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &canvasCancellables)
         NotificationCenter.default.publisher(for: .crispPanelDidClose)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.sectionState.collapseAll() }
+            .sink { [weak self] _ in self?.sectionState.collapseDetailSections() }
             .store(in: &canvasCancellables)
     }
 
@@ -887,6 +887,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Native menus appear at full size with all content visible at once;
         // only size changes AFTER opening animate.
+        if !sectionState.showVirtualDisplays {
+            sectionState.showVirtualDisplays = true
+        }
         positionPanel(p)
         canvas.retargetLinkIfNeeded()
         canvas.wakeSpring()

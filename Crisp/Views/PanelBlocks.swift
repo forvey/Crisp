@@ -10,7 +10,7 @@ import AppKit
 @MainActor
 final class PanelSectionState: ObservableObject {
     @Published var showTools = false
-    @Published var showVirtualDisplays = false
+    @Published var showVirtualDisplays = true
     @Published var showArrangement = false
     @Published var showSettings = false
     @Published var expandedDisplayIDs: Set<CGDirectDisplayID> = []
@@ -23,10 +23,9 @@ final class PanelSectionState: ObservableObject {
     @Published var imageOpenIDs: Set<CGDirectDisplayID> = []
     @Published var inputOpenIDs: Set<CGDirectDisplayID> = []
 
-    /// Collapse every section so the panel reopens fresh; called once hidden.
-    func collapseAll() {
+    /// Collapse the detail sections once the panel is hidden.
+    func collapseDetailSections() {
         showTools = false
-        showVirtualDisplays = false
         showArrangement = false
         showSettings = false
         expandedDisplayIDs.removeAll()
@@ -103,6 +102,19 @@ struct ExpandableRowStateful: View {
                 set: { state[keyPath: key] = $0 }
             )
         )
+    }
+}
+
+/// Virtual displays are reachable directly from the main panel.
+struct VirtualDisplaysHeadBlock: View {
+    @ObservedObject var state: PanelSectionState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionDivider()
+            ExpandableRowStateful(icon: "display.2", iconActive: false,
+                                  label: "Virtual Displays", state: state, key: \.showVirtualDisplays)
+        }
     }
 }
 

@@ -46,10 +46,17 @@ struct VirtualDisplayView: View {
                     } else {
                         VirtualDisplayRow(
                             config: config,
-                            isActive: service.isActive(config.id),
+                            isActive: Binding(
+                                get: { service.isActive(config.id) },
+                                set: { enabled in
+                                    if enabled {
+                                        handleActivate(config)
+                                    } else {
+                                        service.destroy(configID: config.id)
+                                    }
+                                }
+                            ),
                             isActivating: activatingID == config.id,
-                            onActivate: { handleActivate(config) },
-                            onDeactivate: { service.destroy(configID: config.id) },
                             onEdit: {
                                 withAnimation(.panelResize) {
                                     editingID = config.id
@@ -205,10 +212,8 @@ struct VirtualDisplayView: View {
 
 struct VirtualDisplayRow: View {
     let config: VirtualDisplayService.VirtualDisplayConfig
-    let isActive: Bool
+    @Binding var isActive: Bool
     let isActivating: Bool
-    let onActivate: () -> Void
-    let onDeactivate: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -216,26 +221,34 @@ struct VirtualDisplayRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            MenuItemIcon(systemName: "display.2", color: .blue, active: isActive)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(config.name)
-                    .font(.body)
-                    .lineLimit(1)
-                Text(verbatim: "\(config.desktopMode.width)×\(config.desktopMode.height)"
-                     + (config.desktopMode.hiDPI ? " HiDPI" : ""))
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+            HStack(spacing: 8) {
+                MenuItemIcon(systemName: "display.2", color: .blue, active: isActive)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(config.name)
+                        .font(.body)
+                        .lineLimit(1)
+                    Text(verbatim: "\(config.desktopMode.width)×\(config.desktopMode.height)"
+                         + (config.desktopMode.hiDPI ? " HiDPI" : ""))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
-
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if !isActive && !isActivating { isActive = true }
+            }
 
             if isActivating {
                 ProgressView()
                     .scaleEffect(0.6)
                     .frame(width: 16, height: 16)
             } else {
-                statusPill
+                Toggle(config.name, isOn: $isActive)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .fixedSize()
             }
 
             Menu {
@@ -258,44 +271,11 @@ struct VirtualDisplayRow: View {
         .menuRowHover(isHovered)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .onTapGesture {
-            // An off display turns back on with a tap (also in the ⋯ menu).
-            if !isActive && !isActivating { onActivate() }
-        }
         .contextMenu { rowActions }
     }
 
     @ViewBuilder
-    private var statusPill: some View {
-        if isActive {
-            pill("Active", color: .blue)
-        } else {
-            pill("Off", color: .secondary)
-        }
-    }
-
-    // LocalizedStringKey, not String: Text(String) is the non-localizing overload.
-    private func pill(_ text: LocalizedStringKey, color: Color) -> some View {
-        Text(text)
-            .font(.caption2)
-            .fontWeight(.medium)
-            .foregroundColor(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(color.opacity(0.15)))
-    }
-
-    @ViewBuilder
     private var rowActions: some View {
-        if isActive {
-            Button(action: onDeactivate) {
-                Label("Deactivate", systemImage: "stop.circle")
-            }
-        } else {
-            Button(action: onActivate) {
-                Label("Activate", systemImage: "play.circle")
-            }
-        }
         Button(action: onEdit) {
             Label("Edit…", systemImage: "pencil")
         }
