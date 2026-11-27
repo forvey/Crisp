@@ -89,7 +89,8 @@ final class LagHostSampler {
         result.busyProcesses = busy.sorted { $0.1 > $1.1 }.prefix(6).map { pid, cpu, memory in
             var name = [CChar](repeating: 0, count: 128)
             let known = proc_name(pid, &name, UInt32(name.count)) > 0
-            return LagProcess(pid: pid, name: known ? String(cString: name) : "PID \(pid)", cpu: cpu,
+            let label = String(bytes: name.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, encoding: .utf8)
+            return LagProcess(pid: pid, name: known ? (label ?? "PID \(pid)") : "PID \(pid)", cpu: cpu,
                 residentBytes: memory, diskReadBytes: nil, diskWriteBytes: nil,
                 unavailable: nil, cpuInterval: result.interval)
         }
@@ -155,7 +156,7 @@ struct LagProbeParser {
 final class LagNetworkCollector {
     private let queue: DispatchQueue
     private var trace = LagNetworkTrace(started: LagRecorder.now())
-    private var commands: [LagTraceCommand] = []
+    private var commands: [UUID: LagTraceCommand] = [:]
     private var ended = false
     private var gateway: String?
     private let peer: String?
@@ -209,19 +210,24 @@ final class LagNetworkCollector {
         var args = ["-n", "get", peer?.contains(":") == true ? "-inet6" : "-inet"]
         if let scoped { args += ["-ifscope", scoped] }
         args.append(target)
+        let commandID = UUID()
         let command = LagTraceCommand(queue: queue, line: { line in
             let pair = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             guard pair.count == 2 else { return }
             if pair[0] == "interface", !pair[1].isEmpty, pair[1].utf8.count <= 32 { interface = pair[1] }
             if pair[0] == "gateway", LagProbeParser.numericAddress(pair[1]) { gateway = pair[1] }
         }, exit: { [weak self] state in
-            guard let self, !self.ended else { return }
+            guard let self else { return }
+            self.commands.removeValue(forKey: commandID)
+            guard !self.ended else { return }
             completion(state == "exited" ? interface : nil, state == "exited" ? gateway : nil)
         })
-        commands.append(command); command.start(path: "/sbin/route", arguments: args, seconds: 2)
+        commands[commandID] = command
+        command.start(path: "/sbin/route", arguments: args, seconds: 2)
     }
     private func startPing(_ target: String, interface: String, gateway: Bool) {
         if gateway { trace.gateway.state = "collecting" } else { trace.peer.state = "collecting" }
+        let commandID = UUID()
         let command = LagTraceCommand(queue: queue, line: { [weak self] line in
             guard let self, !self.ended else { return }
             var probe = gateway ? self.trace.gateway : self.trace.peer
@@ -231,10 +237,12 @@ final class LagNetworkCollector {
             if let totals = LagProbeParser.totals(line) { probe.transmitted = totals.0; probe.received = totals.1 }
             if gateway { self.trace.gateway = probe } else { self.trace.peer = probe }
         }, exit: { [weak self] state in
-            guard let self, !self.ended else { return }
+            guard let self else { return }
+            self.commands.removeValue(forKey: commandID)
+            guard !self.ended else { return }
             if gateway { self.trace.gateway.state = state } else { self.trace.peer.state = state }
         })
-        commands.append(command)
+        commands[commandID] = command
         let v6 = target.contains(":")
         let args = v6 ? ["-n", "-B", interface, "-i", "0.5", "-c", "30", "-s", "32", target]
             : ["-n", "-b", interface, "-i", "0.5", "-c", "30", "-W", "1000", "-s", "32", target]
@@ -244,13 +252,13 @@ final class LagNetworkCollector {
     func snapshot() -> LagNetworkTrace { trace }
     @discardableResult func stop() -> LagNetworkTrace {
         guard !ended else { return trace }
-        commands.forEach { $0.drain() }; ended = true
+        commands.values.forEach { $0.drain() }; ended = true
         routeTimer?.cancel(); routeTimer = nil
-        commands.forEach { $0.stop() }; commands.removeAll()
+        commands.values.forEach { $0.stop() }; commands.removeAll()
         trace.ended = LagRecorder.now()
         if trace.peer.state == "collecting" { trace.peer.state = "stopped" }
         if trace.gateway.state == "collecting" { trace.gateway.state = "stopped" }
         return trace
     }
-    deinit { routeTimer?.cancel(); commands.forEach { $0.stop() } }
+    deinit { routeTimer?.cancel(); commands.values.forEach { $0.stop() } }
 }

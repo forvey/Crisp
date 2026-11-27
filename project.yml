@@ -90,6 +90,7 @@ targets:
       - path: Crisp/Models/CrispAudioResampler.swift
       - path: Crisp/Services/CrispAudioServer.swift
       - path: Crisp/Models/LagData.swift
+      - path: Crisp/Models/LagDiagnosis.swift
       - path: Crisp/Models/LagQuality.swift
       - path: Crisp/Services/CrispLagSession.swift
       - path: Crisp/Models/LagScreenTrace.swift

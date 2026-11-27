@@ -90,7 +90,8 @@ final class CrispLagSession: @unchecked Sendable {
             let recorder = LagRecorder(scope: scope)
             self.recorder = recorder; sampler = LagResourceSampler(); attach(recorder)
             send(LagMessage(kind: "started", id: id, time: now,
-                            note: "resources,audio,pattern-v1,motion-v1,motion-v2,quality-v2,screen-evidence-v1,motion-cause-v1; no desktop encoder/decoder counters"))
+                            note: "resources,audio,pattern-v1,motion-v1,motion-v2,quality-v2,screen-evidence-v1,motion-cause-v1; " +
+                                "no desktop encoder/decoder counters"))
             return
         }
         guard message.id == id, now < deadline else { closeOnQueue(); return }
@@ -109,62 +110,84 @@ final class CrispLagSession: @unchecked Sendable {
             let sessionID = id
             DispatchQueue.main.async { CrispLagPattern.shared.close(id: sessionID) }
         case "motionStart", "motionPrepare":
-            guard recorder?.scope.screen == true, causeBegan == nil, motionToken == nil, qualityToken == nil,
-                  let token = message.sequence, (1...4095).contains(token),
-                  deadline - now >= 20 else { throw LagError.invalidMessage }
-            motionToken = token
-            collectCause = message.collectCause == true
-            if collectCause, message.kind == "motionStart" { startCause() }
-            if !collectCause, message.collectScreenTrace == true {
-                screenCollector = LagScreenCollector(queue: queue,
-                    peer: LagScreenParser.peer(connection.currentPath?.remoteEndpoint ?? connection.endpoint), server: true)
-            }
-            let sessionID = id
-            // All start/stop/close operations are submitted from this serial
-            // queue to the main queue in order. A late start cannot overtake close.
-            DispatchQueue.main.async { [weak self] in
-                CrispLagPattern.shared.startMotion(id: sessionID, token: token, waitingForReader: message.kind == "motionPrepare") { result in
-                    guard let self else { return }
-                    self.queue.async {
-                        guard !self.closed, self.motionToken == token else { return }
-                        self.motionToken = nil
-                        let trace = self.screenCollector?.stop(), network = self.networkCollector?.stop()
-                        self.screenCollector = nil; self.networkCollector = nil; self.hostSampler = nil
-                        if self.collectCause { self.causeDone = true; self.sampler = nil }
-                        self.send(LagMessage(kind: "motionResult", id: sessionID, motion: result, screenTrace: trace, network: network))
-                    }
-                }
-            }
+            try startMotion(message, now: now)
         case "motionRun":
-            guard let token = message.sequence, motionToken == token, deadline - now >= 16 else { throw LagError.invalidMessage }
-            if collectCause, causeBegan == nil { startCause() }
-            let sessionID = id
-            DispatchQueue.main.async { CrispLagPattern.shared.runMotion(id: sessionID, token: token) }
+            try runMotion(message, now: now)
         case "motionStop":
-            guard let token = message.sequence, motionToken == token else { return }
-            let sessionID = id
-            DispatchQueue.main.async { CrispLagPattern.shared.stopMotion(id: sessionID, token: token) }
+            stopMotion(message)
         case "qualityStart":
-            guard recorder?.scope.screen == true, causeBegan == nil, motionToken == nil, qualityToken == nil,
-                  let token = message.sequence, (1...4095).contains(token), deadline - now >= 16 else { throw LagError.invalidMessage }
-            qualityToken = token
-            let sessionID = id
-            DispatchQueue.main.async { [weak self] in
-                let reference = try? CrispLagPattern.shared.startQuality(id: sessionID, token: token)
+            try startQuality(message, now: now)
+        case "qualityStop":
+            stopQuality(message)
+        case "stop": closeOnQueue()
+        default: throw LagError.invalidMessage
+        }
+    }
+
+    private func stopMotion(_ message: LagMessage) {
+        guard let token = message.sequence, motionToken == token else { return }
+        let sessionID = id
+        DispatchQueue.main.async { CrispLagPattern.shared.stopMotion(id: sessionID, token: token) }
+    }
+
+    private func runMotion(_ message: LagMessage, now: Double) throws {
+        guard let token = message.sequence, motionToken == token, deadline - now >= 16 else { throw LagError.invalidMessage }
+        if collectCause, causeBegan == nil { startCause() }
+        let sessionID = id
+        DispatchQueue.main.async { CrispLagPattern.shared.runMotion(id: sessionID, token: token) }
+    }
+
+    private func stopQuality(_ message: LagMessage) {
+        guard let token = qualityToken, message.sequence == token else { return }
+        qualityToken = nil
+        let sessionID = id
+        DispatchQueue.main.async { CrispLagPattern.shared.close(id: sessionID) }
+    }
+
+    private func startQuality(_ message: LagMessage, now: Double) throws {
+        guard recorder?.scope.screen == true, causeBegan == nil, motionToken == nil, qualityToken == nil,
+              let token = message.sequence, (1...4095).contains(token), deadline - now >= 16 else { throw LagError.invalidMessage }
+        qualityToken = token
+        let sessionID = id
+        DispatchQueue.main.async { [weak self] in
+            CrispLagPattern.shared.startQuality(id: sessionID, token: token) { reference in
                 guard let self else { return }
                 self.queue.async {
                     guard !self.closed, self.qualityToken == token else { return }
+                    if reference == nil { self.qualityToken = nil }
                     self.send(LagMessage(kind: "qualityReady", id: sessionID, sequence: token,
                         note: reference == nil ? "mini 无法生成或显示清晰度参考图。" : nil, quality: reference))
                 }
             }
-        case "qualityStop":
-            guard let token = qualityToken, message.sequence == token else { return }
-            qualityToken = nil
-            let sessionID = id
-            DispatchQueue.main.async { CrispLagPattern.shared.close(id: sessionID) }
-        case "stop": closeOnQueue()
-        default: throw LagError.invalidMessage
+        }
+    }
+
+    private func startMotion(_ message: LagMessage, now: Double) throws {
+        guard recorder?.scope.screen == true, causeBegan == nil, motionToken == nil, qualityToken == nil,
+              let token = message.sequence, (1...4095).contains(token),
+              deadline - now >= 20 else { throw LagError.invalidMessage }
+        motionToken = token
+        collectCause = message.collectCause == true
+        if collectCause, message.kind == "motionStart" { startCause() }
+        if !collectCause, message.collectScreenTrace == true {
+            screenCollector = LagScreenCollector(queue: queue,
+                peer: LagScreenParser.peer(connection.currentPath?.remoteEndpoint ?? connection.endpoint), server: true)
+        }
+        let sessionID = id
+        // All start/stop/close operations are submitted from this serial
+        // queue to the main queue in order. A late start cannot overtake close.
+        DispatchQueue.main.async { [weak self] in
+            CrispLagPattern.shared.startMotion(id: sessionID, token: token, waitingForReader: message.kind == "motionPrepare") { result in
+                guard let self else { return }
+                self.queue.async {
+                    guard !self.closed, self.motionToken == token else { return }
+                    self.motionToken = nil
+                    let trace = self.screenCollector?.stop(), network = self.networkCollector?.stop()
+                    self.screenCollector = nil; self.networkCollector = nil; self.hostSampler = nil
+                    if self.collectCause { self.causeDone = true; self.sampler = nil }
+                    self.send(LagMessage(kind: "motionResult", id: sessionID, motion: result, screenTrace: trace, network: network))
+                }
+            }
         }
     }
 

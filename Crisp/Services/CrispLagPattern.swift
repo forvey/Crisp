@@ -3,13 +3,24 @@ import AppKit
 /// Only an explicit short-test command displays this window. Nothing is drawn
 /// during ordinary diagnostics. Independent timeout also closes a lost session.
 @MainActor final class CrispLagPattern {
+    private final class WindowDelegate: NSObject, NSWindowDelegate {
+        weak var owner: CrispLagPattern?
+        init(owner: CrispLagPattern) { self.owner = owner }
+        func windowWillClose(_ notification: Notification) {
+            guard let closedWindow = notification.object as? NSWindow else { return }
+            owner?.handleWindowWillClose(closedWindow)
+        }
+    }
+
     static let shared = CrispLagPattern()
+    private lazy var windowDelegate = WindowDelegate(owner: self)
     private var window: NSWindow?
     private var id = ""
     private var expiry: Timer?
     private var motionTimer: Timer?
     private var motionToken: Int?
     private var qualityToken: Int?
+    private var qualityCompletion: (@MainActor (LagQualityReference?) -> Void)?
     private var frames: [LagMotionFrame] = []
     private var motionCompletion: ((LagMotionSource) -> Void)?
     private var motionBegan = 0.0
@@ -18,10 +29,11 @@ import AppKit
         guard motionToken == nil, qualityToken == nil else { return }
         if window == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 240),
-                styleMask: [.titled], backing: .buffered, defer: false)
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "共享画面短测 · 自动关闭"
             window.isReleasedWhenClosed = false
             window.level = .floating
+            window.delegate = windowDelegate
             window.contentView = PatternView()
             // On a multi-display mini the shared display may not be the main
             // one. Use the screen where the remote pointer was left by the user.
@@ -43,41 +55,99 @@ import AppKit
     func close(id: String) {
         guard self.id == id else { return }
         finishMotion(completed: false)
-        expiry?.invalidate(); expiry = nil
-        qualityToken = nil
-        window?.close(); window = nil; self.id = ""
+        cancelQualityState()
+        closeCurrentWindow()
     }
 
-    func startQuality(id: String, token: Int) throws -> LagQualityReference {
-        guard motionToken == nil, qualityToken == nil else { throw LagError.invalidMessage }
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main,
+    func startQuality(id: String, token: Int, completion: @escaping @MainActor (LagQualityReference?) -> Void) {
+        guard motionToken == nil, qualityToken == nil,
+              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main,
               let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
               let mode = CGDisplayCopyDisplayMode(number.uint32Value) else {
-            throw LagError.invalidMessage
+            completion(nil)
+            return
         }
         let scale = Int(screen.backingScaleFactor)
-        guard Double(scale) == screen.backingScaleFactor else { throw LagError.invalidMessage }
+        guard Double(scale) == screen.backingScaleFactor else {
+            completion(nil)
+            return
+        }
         let display = LagDisplay(id: number.uint32Value, width: mode.width, height: mode.height,
-            pixelWidth: mode.pixelWidth, pixelHeight: mode.pixelHeight,
-            backingScale: screen.backingScaleFactor, refreshRate: mode.refreshRate)
-        let reference = try LagQualityChart.make(token: token, scale: scale, display: display)
-        guard let image = NSImage(data: reference.png) else { throw LagError.invalidMessage }
+                                 pixelWidth: mode.pixelWidth, pixelHeight: mode.pixelHeight,
+                                 backingScale: screen.backingScaleFactor, refreshRate: mode.refreshRate)
+        let visibleFrame = screen.visibleFrame
+        closeCurrentWindow()
+        self.id = id
+        qualityToken = token
+        qualityCompletion = completion
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let reference = try? LagQualityChart.make(token: token, scale: scale, display: display)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.finishQualitySetup(id: id, token: token, visibleFrame: visibleFrame, reference: reference)
+                }
+            }
+        }
+    }
+
+    private func finishQualitySetup(id: String, token: Int, visibleFrame: NSRect, reference: LagQualityReference?) {
+        guard self.id == id, qualityToken == token, motionToken == nil else { return }
+        guard let reference, let image = NSImage(data: reference.png) else {
+            cancelQualityState()
+            return
+        }
         let size = NSSize(width: Double(LagQualityChart.width), height: Double(LagQualityChart.height))
         image.size = size
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
-                              styleMask: [.titled], backing: .buffered, defer: false)
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "画面清晰度诊断 · 结束后关闭"
-        window.isReleasedWhenClosed = false; window.level = .floating
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        window.delegate = windowDelegate
         window.contentView = QualityView(image: image, size: size)
-        window.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - size.width / 2,
-                                      y: screen.visibleFrame.midY - size.height / 2))
-        self.window?.close(); self.window = window; self.id = id; qualityToken = token
-        window.orderFrontRegardless(); window.displayIfNeeded()
+        window.setFrameOrigin(NSPoint(x: visibleFrame.midX - size.width / 2,
+                                      y: visibleFrame.midY - size.height / 2))
+        closeCurrentWindow()
+        self.window = window
+        window.orderFrontRegardless()
+        window.displayIfNeeded()
         let expiry = Timer(timeInterval: 16, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.close(id: id) }
         }
-        self.expiry?.invalidate(); self.expiry = expiry; RunLoop.main.add(expiry, forMode: .common)
-        return reference
+        self.expiry?.invalidate()
+        self.expiry = expiry
+        RunLoop.main.add(expiry, forMode: .common)
+        let completion = qualityCompletion
+        qualityCompletion = nil
+        completion?(reference)
+    }
+
+    private func closeCurrentWindow() {
+        let current = window
+        window = nil
+        current?.delegate = nil
+        current?.close()
+    }
+
+    private func cancelQualityState() {
+        expiry?.invalidate()
+        expiry = nil
+        qualityToken = nil
+        let completion = qualityCompletion
+        qualityCompletion = nil
+        id = ""
+        completion?(nil)
+    }
+
+    private func handleWindowWillClose(_ closedWindow: NSWindow) {
+        guard window === closedWindow else { return }
+        window = nil
+        closedWindow.delegate = nil
+        if motionToken != nil {
+            finishMotion(completed: false)
+            return
+        }
+        cancelQualityState()
     }
 
     private final class QualityView: NSView {
@@ -154,7 +224,7 @@ import AppKit
                                     started: motionBegan == 0 ? LagRecorder.now() : motionBegan, ended: LagRecorder.now())
         let completion = motionCompletion
         motionToken = nil; motionCompletion = nil; frames = []
-        window?.close(); window = nil; id = ""
+        closeCurrentWindow(); id = ""
         completion?(result)
     }
 

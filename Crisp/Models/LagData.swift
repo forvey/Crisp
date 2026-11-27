@@ -300,7 +300,8 @@ struct LagScreenTrace: Codable, Sendable {
 
     var valid: Bool {
         started.isFinite && started >= 0 && (ended.map { $0.isFinite && $0 >= started } ?? true) &&
-        tcp.count <= (allTransports == true ? 192 : 128) && events.count <= 256 && notes.count <= 12 && notes.allSatisfy { $0.utf8.count <= 512 } &&
+        tcp.count <= (allTransports == true ? 192 : 128) && events.count <= 256 &&
+        notes.count <= 12 && notes.allSatisfy { $0.utf8.count <= 512 } &&
         tcp.allSatisfy { $0.stamp.isFinite && $0.stamp >= started && $0.connection.utf8.count <= 256 &&
             $0.interface.utf8.count <= 32 && ($0.rttMS.map { $0.isFinite && $0 >= 0 } ?? true) &&
             ($0.transport.map { ["tcp", "udp"].contains($0) } ?? true) && ($0.process.map { $0.utf8.count <= 128 } ?? true) } &&
@@ -330,7 +331,8 @@ struct LagHostReading: Codable, Sendable {
     var valid: Bool {
         sampleMS.isFinite && sampleMS >= 0 && timerLateMS.isFinite && timerLateMS >= 0 &&
         (interval.map { $0.isFinite && $0 >= 0 } ?? true) && gpu.count <= 16 && busyProcesses.count <= 6 &&
-        gpu.allSatisfy { $0.device.utf8.count <= 64 && $0.field.utf8.count <= 64 && $0.percent.isFinite && (0...100).contains($0.percent) } &&
+        gpu.allSatisfy { $0.device.utf8.count <= 64 && $0.field.utf8.count <= 64 &&
+            $0.percent.isFinite && (0...100).contains($0.percent) } &&
         busyProcesses.allSatisfy { $0.name.utf8.count <= 512 && ($0.cpu.map { $0.isFinite && $0 >= 0 } ?? true) }
     }
 }
@@ -405,6 +407,7 @@ struct LagMotionSource: Codable, Sendable {
             guard frame.number == index + 1, frame.stamp.isFinite, frame.stamp >= started, frame.stamp <= ended else { return false }
             if index > 0, frame.stamp <= frames[index - 1].stamp { return false }
         }
-        return frames.isEmpty || frames.last!.stamp - frames.first!.stamp <= 18
+        guard let first = frames.first, let last = frames.last else { return true }
+        return last.stamp - first.stamp <= 18
     }
 }

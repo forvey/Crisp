@@ -58,8 +58,8 @@ enum LagQualityChart {
         CGRect(x: 24 + index * 92, y: 348, width: 72, height: 56)
     }
 
-    @MainActor static func make(token: Int, scale: Int = 1, display: LagDisplay? = nil,
-                               includeTextBaseline: Bool = true) throws -> LagQualityReference {
+    static func make(token: Int, scale: Int = 1, display: LagDisplay? = nil,
+                     includeTextBaseline: Bool = true) throws -> LagQualityReference {
         guard (1...4095).contains(token), (1...2).contains(scale),
               let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width * scale, pixelsHigh: height * scale,
                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
@@ -81,9 +81,11 @@ enum LagQualityChart {
             for row in 0..<2 {
                 for column in 0..<28 {
                     let color: (UInt8, UInt8, UInt8)
-                    if column < 2 { color = (255, 0, 255) }
-                    else if column >= 26 { color = (0, 255, 255) }
-                    else {
+                    if column < 2 {
+                        color = (255, 0, 255)
+                    } else if column >= 26 {
+                        color = (0, 255, 255)
+                    } else {
                         let light = ((code >> (column - 2)) & 1) == 1 - row
                         color = light ? (255, 255, 255) : (0, 0, 0)
                     }
@@ -122,21 +124,24 @@ enum LagQualityChart {
         NSGraphicsContext.restoreGraphicsState()
         guard let png = image.representation(using: .png, properties: [:]) else { throw LagError.invalidMessage }
         var result = LagQualityReference(token: token, png: png, renderScale: scale, display: display)
-        if includeTextBaseline {
-            let baseline: CGImage?
-            if scale == 2 { baseline = image.cgImage }
-            else {
-                let high = try make(token: token, scale: 2, includeTextBaseline: false)
-                baseline = CGImageSourceCreateWithData(high.png as CFData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
-            }
-            guard let crop = baseline?.cropping(to: textRect.applying(CGAffineTransform(scaleX: 2, y: 2))),
-                  let data = NSBitmapImageRep(cgImage: crop).representation(using: .png, properties: [:]) else {
-                throw LagError.invalidMessage
-            }
-            result.textBaselinePNG = data
-        }
+        if includeTextBaseline { result.textBaselinePNG = try textBaseline(image: image, token: token, scale: scale) }
         guard result.valid else { throw LagError.invalidMessage }
         return result
+    }
+
+    private static func textBaseline(image: NSBitmapImageRep, token: Int, scale: Int) throws -> Data {
+        let baseline: CGImage?
+        if scale == 2 {
+            baseline = image.cgImage
+        } else {
+            let high = try make(token: token, scale: 2, includeTextBaseline: false)
+            baseline = CGImageSourceCreateWithData(high.png as CFData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+        }
+        guard let crop = baseline?.cropping(to: textRect.applying(CGAffineTransform(scaleX: 2, y: 2))),
+              let data = NSBitmapImageRep(cgImage: crop).representation(using: .png, properties: [:]) else {
+            throw LagError.invalidMessage
+        }
+        return data
     }
 }
 
@@ -194,10 +199,13 @@ struct LagQualityResult: Codable {
                                 LagQualityChart.lineWidths[index], lineContrast[index] * 100))
         }
         lines.append(String(format: "色块平均 RGB 差异：%.1f / 255（不是物理屏幕校色结果）。", colorDifference * 255))
-        if !completed { lines.append("诊断提前结束：以下仅为已有画面的测量，不能作为完整诊断结论。") }
-        else if abs(pointX - pointY) > 0.05 { lines.append("结论：横纵显示比例不同，画面可能被拉伸；先统一比例再比较。") }
-        else if reduced { lines.append("结论：存在显示缩小；建议保持同一窗口比例比较，或用原尺寸重测。") }
-        else if (commonText?.difference ?? textDifference) > 0.05 || (lineContrast.min() ?? 1) < 0.7 || colorDifference > 0.05 {
+        if !completed {
+            lines.append("诊断提前结束：以下仅为已有画面的测量，不能作为完整诊断结论。")
+        } else if abs(pointX - pointY) > 0.05 {
+            lines.append("结论：横纵显示比例不同，画面可能被拉伸；先统一比例再比较。")
+        } else if reduced {
+            lines.append("结论：存在显示缩小；建议保持同一窗口比例比较，或用原尺寸重测。")
+        } else if (commonText?.difference ?? textDifference) > 0.05 || (lineContrast.min() ?? 1) < 0.7 || colorDifference > 0.05 {
             lines.append("结论：本次窗口图像存在可测的细节或颜色差异；不能单凭此结果定位到编码或网络。")
         } else { lines.append("结论：本次固定图未发现明显差异；不代表所有字体、视频或物理屏幕都清晰。") }
         lines.append("检查 \(samples) 个完整图像，报告最后一次结果；" +

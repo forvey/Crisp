@@ -5,7 +5,7 @@ import Foundation
 /// create a second remote video session, or open an audio device.
 enum LagLifecycleTests {
     @MainActor
-    static func pattern() {
+    static func pattern() throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         func shown() -> NSWindow? {
@@ -18,8 +18,14 @@ enum LagLifecycleTests {
             preconditionFailure("Pattern window was not shown")
         }
         view.cacheDisplay(in: view.bounds, to: image)
+        // Coordinates below describe interface points. A HiDPI cache has
+        // twice as many pixels; sample the same point on either backing scale.
+        let scaleX = Double(image.pixelsWide) / view.bounds.width
+        let scaleY = Double(image.pixelsHigh) / view.bounds.height
+        print("Pattern cache: \(image.pixelsWide)x\(image.pixelsHigh), point-to-pixel scale \(scaleX)x\(scaleY)")
         func color(_ x: Int, _ y: Int) -> NSColor {
-            guard let value = image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+            let pixelX = Int(Double(x) * scaleX), pixelY = Int(Double(y) * scaleY)
+            guard let value = image.colorAt(x: pixelX, y: pixelY)?.usingColorSpace(.deviceRGB) else {
                 preconditionFailure("Pattern could not be drawn")
             }
             return value
@@ -110,25 +116,79 @@ enum LagLifecycleTests {
         func qualityWindow() -> NSWindow? {
             app.windows.first { $0.title == "画面清晰度诊断 · 结束后关闭" && $0.isVisible }
         }
-        let reference = try! pattern.startQuality(id: "quality-stop", token: 31)
-        guard reference.valid, let quality = qualityWindow(), let qualityView = quality.contentView else {
+        func startQualityAndWait(id: String, token: Int) -> LagQualityReference? {
+            var generated: LagQualityReference?
+            var finished = false
+            pattern.startQuality(id: id, token: token) {
+                generated = $0
+                finished = true
+            }
+            let waitStart = LagRecorder.now()
+            while !finished, LagRecorder.now() - waitStart < 5 {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            precondition(finished, "Quality chart generation did not finish in time")
+            return generated
+        }
+        guard let reference = startQualityAndWait(id: "quality-stop", token: 31),
+              reference.valid, let quality = qualityWindow(), let qualityView = quality.contentView else {
             preconditionFailure("Clarity chart not shown")
         }
+        precondition(quality.styleMask.contains(.closable))
         let nativeSize = qualityView.convertToBacking(qualityView.bounds).size
         precondition(Int(qualityView.bounds.width) == LagQualityChart.width && Int(qualityView.bounds.height) == LagQualityChart.height)
-        precondition(Int(nativeSize.width) == LagQualityChart.width * reference.scale && Int(nativeSize.height) == LagQualityChart.height * reference.scale)
+        precondition(Int(nativeSize.width) == LagQualityChart.width * reference.scale &&
+                     Int(nativeSize.height) == LagQualityChart.height * reference.scale)
         precondition(reference.display?.backingScale == Double(reference.scale))
         pattern.close(id: "previous-session")
         precondition(qualityWindow() != nil)
-        pattern.close(id: "quality-stop")
+        quality.close()
         precondition(qualityWindow() == nil)
-        _ = try! pattern.startQuality(id: "quality-expiry", token: 32)
+        guard let expiryRef = startQualityAndWait(id: "quality-expiry", token: 32), expiryRef.valid else {
+            preconditionFailure("Clarity expiry chart not shown")
+        }
+        pattern.close(id: "quality-expiry")
+        precondition(qualityWindow() == nil)
+        _ = startQualityAndWait(id: "quality-expiry-2", token: 33)
         let qualityBegan = LagRecorder.now()
         while qualityWindow() != nil, LagRecorder.now() - qualityBegan < 17 {
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
         precondition(qualityWindow() == nil && LagRecorder.now() - qualityBegan >= 15.8)
-        print("Clarity lifecycle passed: display-scale pixels, stale stop isolation, explicit stop and independent 16-second expiry")
+        print("Clarity lifecycle passed: display-scale pixels, local close, stale stop, " +
+              "explicit stop and 16-second expiry")
+    }
+
+    @MainActor
+    static func screenTrace(port: UInt16) {
+        func wait(_ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(4)
+            while !condition(), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            precondition(condition(), "Screen trace round trip did not finish")
+        }
+        for collect in [false, true] {
+            let peer = DiagnosticPeer(port: port, duration: 30)
+            wait { peer.count("started") == 1 }
+            precondition(peer.last("started")?.note?.contains("screen-evidence-v1") == true)
+            peer.send("motionPrepare", sequence: 101, collect: collect ? true : nil)
+            wait { NSApplication.shared.windows.contains { $0.title == "共享画面短测 · 自动关闭" && $0.isVisible } }
+            peer.send("motionStop", sequence: 101)
+            wait { peer.count("motionResult") == 1 }
+            let result = peer.last("motionResult")!
+            precondition(result.motion?.token == 101 && result.motion?.completed == false)
+            if collect {
+                // A loopback peer must never launch nettop or system-log collection.
+                precondition(result.screenTrace?.valid == true && result.screenTrace?.ended != nil)
+                precondition(result.screenTrace?.tcpState == "unavailable" && result.screenTrace?.logState == "notStarted")
+                precondition(result.screenTrace?.tcp.isEmpty == true && result.screenTrace?.events.isEmpty == true)
+            } else { precondition(result.screenTrace == nil, "Old clients unexpectedly enabled screen collection") }
+            peer.stop()
+            wait { peer.isClosed() }
+            precondition(!NSApplication.shared.windows.contains { $0.title == "共享画面短测 · 自动关闭" && $0.isVisible })
+        }
+        print("Screen trace TCP passed: opt-in result, loopback no collection, legacy omission and stop cleanup")
     }
 
     static func maximumDuration(port: UInt16) -> Double {

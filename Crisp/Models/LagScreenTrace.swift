@@ -39,14 +39,15 @@ struct LagScreenParser {
               remote.0 == Self.normalized(peer),
               allTransports || (server ? local.1 : remote.1) == 5900 else { return nil }
         func field(_ key: String) -> String? { columns.firstIndex(of: key).map { cells[$0] } }
-        guard (udp || field("state") == "Established"),
+        guard udp || field("state") == "Established",
               let incoming = field("bytes_in").flatMap(UInt64.init),
               let outgoing = field("bytes_out").flatMap(UInt64.init) else { return nil }
         let rtt = field("rtt_avg").flatMap { Double($0.replacingOccurrences(of: " ms", with: "")) }
         return LagTCPReading(stamp: stamp, connection: String((allTransports ? "\(process ?? "unknown") \(name)" : name).prefix(256)),
             interface: String((field("interface") ?? "").prefix(32)), bytesIn: incoming, bytesOut: outgoing,
             retransmitBytes: udp ? nil : field("re-tx").flatMap(UInt64.init),
-            duplicateBytes: udp ? nil : field("rx_dupe").flatMap(UInt64.init), outOfOrderBytes: udp ? nil : field("rx_ooo").flatMap(UInt64.init),
+            duplicateBytes: udp ? nil : field("rx_dupe").flatMap(UInt64.init),
+            outOfOrderBytes: udp ? nil : field("rx_ooo").flatMap(UInt64.init),
             rttMS: udp ? nil : rtt.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
             receiveBuffer: udp ? nil : field("rcvsize").flatMap(UInt64.init), sendWindow: udp ? nil : field("tx_win").flatMap(UInt64.init),
             transport: allTransports ? (udp ? "udp" : "tcp") : nil, process: allTransports ? process : nil)
@@ -68,9 +69,15 @@ struct LagScreenParser {
                let seconds = Double(message[start.upperBound..<end]), seconds.isFinite, (0...60).contains(seconds) {
                 duration = seconds * 1000
             }
-        } else if process == "kernel", message.contains("AMD ERROR! Failed to allocate") {
-            kind = "gpuAllocationFailure"
-        } else { return nil }
+        } else {
+        #if !arch(arm64)
+            if process == "kernel", message.contains("AMD ERROR! Failed to allocate") {
+                kind = "gpuAllocationFailure"
+            } else { return nil }
+        #else
+            return nil
+        #endif
+        }
         var stamp: Double?
         // A changed wall clock cannot silently move events onto a freeze.
         if abs(date.timeIntervalSince(wall) - (now - started)) <= 0.05,
@@ -118,20 +125,20 @@ final class LagTraceCommand: @unchecked Sendable {
             // nettop buffers CSV until exit when stdout is a pipe. A raw PTY
             // makes libc flush each line, without a shell, helper process or
             // repeated nettop launches. No user terminal input is attached.
-            var master: Int32 = -1, slave: Int32 = -1
-            guard openpty(&master, &slave, nil, nil, nil) == 0 else { exit("unavailable"); return }
+            var readFD: Int32 = -1, writeFD: Int32 = -1
+            guard openpty(&readFD, &writeFD, nil, nil, nil) == 0 else { exit("unavailable"); return }
             var settings = termios()
-            guard tcgetattr(slave, &settings) == 0 else {
-                Darwin.close(master); Darwin.close(slave); exit("unavailable"); return
+            guard tcgetattr(writeFD, &settings) == 0 else {
+                Darwin.close(readFD); Darwin.close(writeFD); exit("unavailable"); return
             }
             cfmakeraw(&settings)
-            guard tcsetattr(slave, TCSANOW, &settings) == 0 else {
-                Darwin.close(master); Darwin.close(slave); exit("unavailable"); return
+            guard tcsetattr(writeFD, TCSANOW, &settings) == 0 else {
+                Darwin.close(readFD); Darwin.close(writeFD); exit("unavailable"); return
             }
-            _ = fcntl(master, F_SETFD, FD_CLOEXEC)
-            _ = fcntl(slave, F_SETFD, FD_CLOEXEC)
-            handles = [FileHandle(fileDescriptor: master, closeOnDealloc: true), errors.fileHandleForReading]
-            output = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
+            _ = fcntl(readFD, F_SETFD, FD_CLOEXEC)
+            _ = fcntl(writeFD, F_SETFD, FD_CLOEXEC)
+            handles = [FileHandle(fileDescriptor: readFD, closeOnDealloc: true), errors.fileHandleForReading]
+            output = FileHandle(fileDescriptor: writeFD, closeOnDealloc: true)
             // nettop still polls stdin in CSV mode. /dev/null is always at
             // EOF and makes it spin at a full core despite 1 Hz output.
             // Keep an empty pipe open so that poll sleeps between samples.
@@ -155,8 +162,7 @@ final class LagTraceCommand: @unchecked Sendable {
                 self.stop()
             }
         }
-        do { try process.run() }
-        catch { handles.forEach { $0.closeFile() }; handles = []; exit("unavailable"); stop(); return }
+        do { try process.run() } catch { handles.forEach { $0.closeFile() }; handles = []; exit("unavailable"); stop(); return }
         for (index, handle) in handles.enumerated() {
             _ = fcntl(handle.fileDescriptor, F_SETFL, fcntl(handle.fileDescriptor, F_GETFL) | O_NONBLOCK)
             let reader = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: queue)
@@ -230,11 +236,19 @@ final class LagScreenCollector {
         self.queue = queue
         trace = LagScreenTrace(started: LagRecorder.now(), wallTime: Date())
         trace.allTransports = allTransports ? true : nil
+        #if arch(arm64)
+        trace.notes = [
+            "屏幕 TCP 按约 1 秒采样；非逐包时间，不能单独归因 100 ms 停顿。",
+            "未申请管理员权限、未抓包；缺少逐包收发与重传时间、源端实际合成和苹果编码/解码耗时。",
+            "仅识别已知 Wi-Fi 扫描日志；没记录不等于没有扫描或 GPU 异常。"
+        ]
+        #else
         trace.notes = [
             "屏幕 TCP 按约 1 秒采样；非逐包时间，不能单独归因 100 ms 停顿。",
             "未申请管理员权限、未抓包；缺少逐包收发与重传时间、源端实际合成和苹果编码/解码耗时。",
             "仅识别已知 Wi-Fi 扫描和 AMD 分配失败日志；没记录不等于没有扫描或 GPU 异常。"
         ]
+        #endif
         guard let peer, !["127.0.0.1", "::1"].contains(LagScreenParser.normalized(peer)) else {
             trace.tcpState = "unavailable"; trace.logState = "notStarted"
             trace.notes.append("未取得实际对端 IP 或为回环测试，未启动系统采集。")
@@ -242,12 +256,12 @@ final class LagScreenCollector {
         }
         var args = ["-L", "25", "-s", "1", "-n", "-x", "-J", LagScreenParser.fields]
         if !allTransports { args += ["-m", "tcp"] }
-        if server { args += ["-p", "screensharingd", "-p", "ScreensharingAgent"] }
-        else if let pid, pid > 0 {
+        if server {
+            args += ["-p", "screensharingd", "-p", "ScreensharingAgent"]
+        } else if let pid, pid > 0 {
             args += ["-p", String(pid)]
             if allTransports { args += ["-p", "ScreensharingAgent", "-p", "screensharingd"] }
-        }
-        else {
+        } else {
             trace.tcpState = "unavailable"; trace.logState = "notStarted"
             trace.notes.append("未取得被测窗口进程，未扩大为全机连接采集。")
             return
@@ -255,7 +269,8 @@ final class LagScreenCollector {
         trace.tcpState = "collecting"; trace.logState = "collecting"
         net = LagTraceCommand(queue: queue, line: { [weak self] line in
             guard let self, !self.ended,
-                  let sample = self.parser.tcp(line, peer: peer, server: server, stamp: LagRecorder.now(), allTransports: allTransports) else { return }
+                  let sample = self.parser.tcp(line, peer: peer, server: server,
+                    stamp: LagRecorder.now(), allTransports: allTransports) else { return }
             guard self.trace.tcp.count < (allTransports ? 192 : 128) else {
                 self.trace.truncated = true; self.trace.tcpState = "truncated"; self.net?.stop(); return
             }
@@ -279,8 +294,16 @@ final class LagScreenCollector {
             self.trace.logState = state
             if state == "truncated" { self.trace.truncated = true }
         })
-        let predicate = "(process == \"airportd\" AND (eventMessage CONTAINS \"SCAN request received\" OR (eventMessage CONTAINS \"Apple80211Scan:\" AND eventMessage CONTAINS \"total time [\"))) OR (process == \"kernel\" AND eventMessage CONTAINS \"AMD ERROR! Failed to allocate\")"
-        logs?.start(path: "/usr/bin/log", arguments: ["stream", "--style", "ndjson", "--level", "info", "--timeout", "25", "--predicate", predicate])
+        #if arch(arm64)
+        let predicate = "(process == \"airportd\" AND (eventMessage CONTAINS \"SCAN request received\" OR " +
+            "(eventMessage CONTAINS \"Apple80211Scan:\" AND eventMessage CONTAINS \"total time [\")))"
+        #else
+        let predicate = "(process == \"airportd\" AND (eventMessage CONTAINS \"SCAN request received\" OR " +
+            "(eventMessage CONTAINS \"Apple80211Scan:\" AND eventMessage CONTAINS \"total time [\"))) OR " +
+            "(process == \"kernel\" AND eventMessage CONTAINS \"AMD ERROR! Failed to allocate\")"
+        #endif
+        logs?.start(path: "/usr/bin/log",
+            arguments: ["stream", "--style", "ndjson", "--level", "info", "--timeout", "25", "--predicate", predicate])
     }
     func snapshot() -> LagScreenTrace { trace }
     @discardableResult func stop() -> LagScreenTrace {

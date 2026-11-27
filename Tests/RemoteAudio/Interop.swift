@@ -130,6 +130,13 @@ final class DiagnosticPeer: @unchecked Sendable {
             } else { self.receive() }
         }
     }
+    func send(_ kind: String, sequence: Int, collect: Bool? = nil) {
+        let message = LagMessage(kind: kind, id: id, sequence: sequence, collectScreenTrace: collect)
+        connection.send(content: Self.encoded(message), completion: .contentProcessed { _ in })
+    }
+    func last(_ kind: String) -> LagMessage? {
+        lock.lock(); defer { lock.unlock() }; return messages.last { $0.kind == kind }
+    }
     func count(_ kind: String) -> Int { lock.lock(); defer { lock.unlock() }; return messages.filter { $0.kind == kind }.count }
     func isClosed() -> Bool { lock.lock(); defer { lock.unlock() }; return closed }
     func elapsed() -> Double { lock.lock(); defer { lock.unlock() }; return closedAfter }
@@ -203,53 +210,117 @@ final class Counter: @unchecked Sendable {
         connection.cancel()
     }
 
-    static func main() throws {
-        let backend = SyntheticAudio()
-        let ready = DispatchSemaphore(value: 0)
-        let server = CrispAudioServer(backend: backend) { state in
-            if let error = state.error { FileHandle.standardError.write(Data("Synthetic server: \(error)\n".utf8)) }
-            if state.listening { ready.signal() }
-        }
-        server.start(port: testPort, loopbackOnly: true)
-        precondition(ready.wait(timeout: .now() + 5) == .success)
-        // Diagnosis with BOTH audio controls off must not start capture, reset
-        // the microphone or keep sampling beyond the independently set timeout.
-        let resets = backend.snapshot().resets
-        let onlyDiagnostic = DiagnosticPeer(port: testPort, duration: 1.2)
-        wait({ onlyDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
-        precondition(!backend.snapshot().active && !backend.snapshot().microphone
-                     && backend.snapshot().resets == resets)
-        wait({ onlyDiagnostic.count("sample") >= 1 })
-        wait({ onlyDiagnostic.isClosed() && !backend.snapshot().diagnosing })
-        FileHandle.standardError.write(Data("Diagnostic deadline: requested 1.2 s, observed \(onlyDiagnostic.elapsed()) s\n".utf8))
-        precondition(onlyDiagnostic.elapsed() < 1.7, "Diagnostic deadline waited for the next one-second sample tick")
-        let samplesAfterStop = onlyDiagnostic.count("sample")
-        Thread.sleep(forTimeInterval: 1.1)
-        precondition(onlyDiagnostic.count("sample") == samplesAfterStop, "Expired diagnostics kept sampling")
-        onlyDiagnostic.cancel()
-        let stoppedDiagnostic = DiagnosticPeer(port: testPort, duration: 10)
-        wait({ stoppedDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
-        stoppedDiagnostic.stop(appendRestart: true)
-        wait({ stoppedDiagnostic.isClosed() && !backend.snapshot().diagnosing })
-        precondition(stoppedDiagnostic.count("started") == 1,
-                     "Frames after stop restarted an orphan recorder")
+    private static func validateInputAvailabilityAndProbes(_ backend: SyntheticAudio) {
+        // Missing/old input reports unavailable. Even an allowed microphone
+        // stays closed, while the independent speaker connection keeps working.
+        backend.setMicrophoneAvailable(false)
+        let listenOnly = AudioTransport()
+        let listenReady = DispatchSemaphore(value: 0)
+        let micUnavailable = DispatchSemaphore(value: 0)
+        let listenPackets = Counter()
+        listenOnly.onReady = { listenReady.signal() }
+        listenOnly.onPCM = { _ in listenPackets.increment() }
+        listenOnly.onFailure = { reason in preconditionFailure(reason) }
+        listenOnly.onMicrophoneUse = { value in if value == .unavailable { micUnavailable.signal() } }
+        listenOnly.connect(host: "127.0.0.1", port: testPort)
+        precondition(listenReady.wait(timeout: .now() + 5) == .success)
+        wait({ listenPackets.count() >= 10 })
+        precondition(!backend.snapshot().microphone)
+        let beforeMissingMic = backend.snapshot().received
+        listenOnly.sendMicrophone(true)
+        precondition(micUnavailable.wait(timeout: .now() + 5) == .success)
+        listenOnly.sendPCM(backend.uplink)
+        let heardBefore = listenPackets.count()
+        wait({ listenPackets.count() >= heardBefore + 10 })
+        precondition(backend.snapshot().active && backend.snapshot().received == beforeMissingMic && !backend.snapshot().microphone)
+        listenOnly.disconnect()
+        wait({ !backend.snapshot().active })
+        backend.setMicrophoneAvailable(true)
 
-        // The actual controller session collects both ends and clock bounds,
-        // then times out. No manual test-only client substitutes its lifecycle.
-        var finalDiagnostic: LagReport?
-        let actualDiagnostic = LagSession(host: "127.0.0.1", scope: .both,
-                                          pid: getpid(), port: testPort, duration: 3) { report, active, _ in
-            if !active { finalDiagnostic = report }
+        // Explicit self-test uses the production server/transport. Generated
+        // frames replace downlink only during the requested speaker stage;
+        // a busy virtual input must reject the microphone stage, not hijack it.
+        backend.setInputInUse(true)
+        let probeClient = AudioTransport()
+        let probeReady = DispatchSemaphore(value: 0)
+        let probeStarted = DispatchSemaphore(value: 0)
+        let probeStopped = DispatchSemaphore(value: 0)
+        let probeRejected = DispatchSemaphore(value: 0)
+        let probePackets = Counter()
+        var measuredProbe: AudioProbeReply?
+        let expectedProbe = Set((0..<64).map { AudioProbeSignal.pcm($0) })
+        probeClient.onReady = { probeReady.signal() }
+        probeClient.onPCM = { if expectedProbe.contains($0) { probePackets.increment() } }
+        probeClient.onProbeReply = { data in
+            guard let reply = try? JSONDecoder().decode(AudioProbeReply.self, from: data) else {
+                preconditionFailure("Invalid synthetic audio probe reply")
+            }
+            if reply.state == "ready" { probeStarted.signal() }
+            if reply.state == "result" { measuredProbe = reply; probeStopped.signal() }
+            if reply.state == "error" { probeRejected.signal() }
         }
-        actualDiagnostic.start()
-        let diagnosticDeadline = Date().addingTimeInterval(6)
-        while finalDiagnostic == nil && Date() < diagnosticDeadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        probeClient.connect(host: "127.0.0.1", port: testPort)
+        precondition(probeReady.wait(timeout: .now() + 5) == .success)
+        probeClient.probe(1)
+        precondition(probeStarted.wait(timeout: .now() + 5) == .success)
+        wait({ probePackets.count() >= 10 })
+        probeClient.probe(0)
+        precondition(probeStopped.wait(timeout: .now() + 5) == .success)
+        precondition((measuredProbe?.stats?.sentPackets ?? 0) >= 10)
+        probeClient.probe(2)
+        precondition(probeRejected.wait(timeout: .now() + 5) == .success)
+        precondition(!backend.snapshot().microphone)
+        probeClient.disconnect()
+        wait({ !backend.snapshot().active })
+
+        // Permission denial is not silent audio. A late permission answer
+        // after cancellation must never reopen the virtual input.
+        backend.setInputInUse(false)
+        let probeIdle = DispatchSemaphore(value: 0)
+        let probeInUse = DispatchSemaphore(value: 0)
+        probeClient.onMicrophoneUse = {
+            if $0 == .idle { probeIdle.signal() }
+            if $0 == .inUse { probeInUse.signal() }
         }
-        precondition(finalDiagnostic != nil, "Actual controller failed to stop")
-        precondition(!finalDiagnostic!.local.isEmpty && !finalDiagnostic!.remote.isEmpty && !finalDiagnostic!.clocks.isEmpty)
-        wait({ !backend.snapshot().diagnosing })
-        precondition(!backend.snapshot().active && !backend.snapshot().microphone)
+        probeClient.connect(host: "127.0.0.1", port: testPort)
+        precondition(probeReady.wait(timeout: .now() + 5) == .success)
+        precondition(probeIdle.wait(timeout: .now() + 5) == .success)
+        backend.setProbePermission(false)
+        probeClient.probe(2)
+        precondition(probeRejected.wait(timeout: .now() + 5) == .success)
+        precondition(backend.snapshot().probeStarts == 0)
+        backend.setProbePermission(nil)
+        probeClient.probe(2)
+        wait({ backend.snapshot().permissionPending })
+        probeClient.disconnect()
+        wait({ !backend.snapshot().active })
+        backend.resolveProbePermission()
+        backend.setProbePermission(true)
+        probeClient.connect(host: "127.0.0.1", port: testPort)
+        precondition(probeReady.wait(timeout: .now() + 5) == .success)
+        precondition(backend.snapshot().probeStarts == 0)
+
+        // Real TCP carries the known sequence into the synthetic input;
+        // received counts and captured samples must describe the same data.
+        probeClient.probe(2)
+        precondition(probeStarted.wait(timeout: .now() + 5) == .success)
+        precondition(probeInUse.wait(timeout: .now() + 5) == .success)
+        let receivedBeforeProbe = backend.snapshot().received
+        probeClient.sendMicrophone(true)
+        for sequence in 0..<25 {
+            probeClient.sendPCM(AudioProbeSignal.pcm(sequence))
+            usleep(20000)
+        }
+        wait({ backend.snapshot().received == receivedBeforeProbe + 25 })
+        probeClient.sendMicrophone(false); probeClient.probe(0)
+        precondition(probeStopped.wait(timeout: .now() + 5) == .success)
+        precondition(measuredProbe?.result?.stats?.receivedPackets == 25)
+        precondition((measuredProbe?.result?.signalMS ?? 0) > 400)
+        probeClient.disconnect()
+        wait({ !backend.snapshot().active })
+    }
+
+    private static func validateCombinedDiagnostic(_ backend: SyntheticAudio) {
         // Real controller + real Crisp pattern, on this machine only. No
         // business screen capture or physical audio; pattern preparation must
         // not consume the shared 15-second collection window.
@@ -290,6 +361,73 @@ final class Counter: @unchecked Sendable {
         wait({ !backend.snapshot().diagnosing })
         precondition(!backend.snapshot().active && !backend.snapshot().microphone)
         print("Combined diagnostic passed: preparation isolation, real pattern, two resource streams, final evidence and cleanup")
+    }
+
+    private static func validateMalformedClients() {
+        malformed(CrispAudioWire.encode(.pcm(CrispAudioWire.silence)))
+        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.probe(3)))
+        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.probeReply(Data("{}".utf8))))
+        malformed(Data([0, 0, 4, 1]))
+        malformed(Data([0, 0, 0, 5, 1]) + Data("bad!".utf8))
+        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.hello))
+        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.pcm(Data([0]))))
+        idleHandshakeExpires()
+    }
+
+    static func main() throws {
+        setbuf(stdout, nil) // Preserve completed checks if a later lifecycle assertion fails.
+        let backend = SyntheticAudio()
+        let ready = DispatchSemaphore(value: 0)
+        let server = CrispAudioServer(backend: backend) { state in
+            if let error = state.error { FileHandle.standardError.write(Data("Synthetic server: \(error)\n".utf8)) }
+            if state.listening { ready.signal() }
+        }
+        server.start(port: testPort, loopbackOnly: true)
+        precondition(ready.wait(timeout: .now() + 5) == .success)
+        if CommandLine.arguments.contains("--screen-trace-only") {
+            MainActor.assumeIsolated { LagLifecycleTests.screenTrace(port: testPort) }
+            server.stop()
+            return
+        }
+        // Diagnosis with BOTH audio controls off must not start capture, reset
+        // the microphone or keep sampling beyond the independently set timeout.
+        let resets = backend.snapshot().resets
+        let onlyDiagnostic = DiagnosticPeer(port: testPort, duration: 1.2)
+        wait({ onlyDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
+        precondition(!backend.snapshot().active && !backend.snapshot().microphone
+                     && backend.snapshot().resets == resets)
+        wait({ onlyDiagnostic.count("sample") >= 1 })
+        wait({ onlyDiagnostic.isClosed() && !backend.snapshot().diagnosing })
+        FileHandle.standardError.write(Data("Diagnostic deadline: requested 1.2 s, observed \(onlyDiagnostic.elapsed()) s\n".utf8))
+        precondition(onlyDiagnostic.elapsed() < 1.7, "Diagnostic deadline waited for the next one-second sample tick")
+        let samplesAfterStop = onlyDiagnostic.count("sample")
+        Thread.sleep(forTimeInterval: 1.1)
+        precondition(onlyDiagnostic.count("sample") == samplesAfterStop, "Expired diagnostics kept sampling")
+        onlyDiagnostic.cancel()
+        let stoppedDiagnostic = DiagnosticPeer(port: testPort, duration: 10)
+        wait({ stoppedDiagnostic.count("started") == 1 && backend.snapshot().diagnosing })
+        stoppedDiagnostic.stop(appendRestart: true)
+        wait({ stoppedDiagnostic.isClosed() && !backend.snapshot().diagnosing })
+        precondition(stoppedDiagnostic.count("started") == 1,
+                     "Frames after stop restarted an orphan recorder")
+
+        // The actual controller session collects both ends and clock bounds,
+        // then times out. No manual test-only client substitutes its lifecycle.
+        var finalDiagnostic: LagReport?
+        let actualDiagnostic = LagSession(host: "127.0.0.1", scope: .both,
+                                          pid: getpid(), port: testPort, duration: 3) { report, active, _ in
+            if !active { finalDiagnostic = report }
+        }
+        actualDiagnostic.start()
+        let diagnosticDeadline = Date().addingTimeInterval(6)
+        while finalDiagnostic == nil && Date() < diagnosticDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        precondition(finalDiagnostic != nil, "Actual controller failed to stop")
+        precondition(!finalDiagnostic!.local.isEmpty && !finalDiagnostic!.remote.isEmpty && !finalDiagnostic!.clocks.isEmpty)
+        wait({ !backend.snapshot().diagnosing })
+        precondition(!backend.snapshot().active && !backend.snapshot().microphone)
+        validateCombinedDiagnostic(backend)
         let invalidDuration = DiagnosticPeer(port: testPort, duration: 61)
         wait({ invalidDuration.isClosed() })
         precondition(invalidDuration.count("started") == 0 && !backend.snapshot().diagnosing)
@@ -297,7 +435,10 @@ final class Counter: @unchecked Sendable {
         if CommandLine.arguments.contains("--full-lifecycle") {
             maximumDiagnosticSeconds = LagLifecycleTests.maximumDuration(port: testPort)
             wait({ !backend.snapshot().diagnosing })
-            MainActor.assumeIsolated { LagLifecycleTests.pattern() }
+            try MainActor.assumeIsolated {
+                try LagLifecycleTests.pattern()
+                LagLifecycleTests.screenTrace(port: testPort)
+            }
         }
         let client = AudioTransport() // Actual committed ScreenSharingEnhancer code, not a substitute.
         let welcomed = DispatchSemaphore(value: 0)
@@ -399,120 +540,9 @@ final class Counter: @unchecked Sendable {
         let cpuAfter = Double(after.ru_utime.tv_sec + after.ru_stime.tv_sec)
             + Double(after.ru_utime.tv_usec + after.ru_stime.tv_usec) / 1e6
 
-        // Missing/old input reports unavailable. Even an allowed microphone
-        // stays closed, while the independent speaker connection keeps working.
-        backend.setMicrophoneAvailable(false)
-        let listenOnly = AudioTransport()
-        let listenReady = DispatchSemaphore(value: 0)
-        let micUnavailable = DispatchSemaphore(value: 0)
-        let listenPackets = Counter()
-        listenOnly.onReady = { listenReady.signal() }
-        listenOnly.onPCM = { _ in listenPackets.increment() }
-        listenOnly.onFailure = { reason in preconditionFailure(reason) }
-        listenOnly.onMicrophoneUse = { value in if value == .unavailable { micUnavailable.signal() } }
-        listenOnly.connect(host: "127.0.0.1", port: testPort)
-        precondition(listenReady.wait(timeout: .now() + 5) == .success)
-        wait({ listenPackets.count() >= 10 })
-        precondition(!backend.snapshot().microphone)
-        let beforeMissingMic = backend.snapshot().received
-        listenOnly.sendMicrophone(true)
-        precondition(micUnavailable.wait(timeout: .now() + 5) == .success)
-        listenOnly.sendPCM(backend.uplink)
-        let heardBefore = listenPackets.count()
-        wait({ listenPackets.count() >= heardBefore + 10 })
-        precondition(backend.snapshot().active && backend.snapshot().received == beforeMissingMic && !backend.snapshot().microphone)
-        listenOnly.disconnect()
-        wait({ !backend.snapshot().active })
-        backend.setMicrophoneAvailable(true)
+        validateInputAvailabilityAndProbes(backend)
 
-        // Explicit self-test uses the production server/transport. Generated
-        // frames replace downlink only during the requested speaker stage;
-        // a busy virtual input must reject the microphone stage, not hijack it.
-        backend.setInputInUse(true)
-        let probeClient = AudioTransport()
-        let probeReady = DispatchSemaphore(value: 0)
-        let probeStarted = DispatchSemaphore(value: 0)
-        let probeStopped = DispatchSemaphore(value: 0)
-        let probeRejected = DispatchSemaphore(value: 0)
-        let probePackets = Counter()
-        var measuredProbe: AudioProbeReply?
-        let expectedProbe = Set((0..<64).map { AudioProbeSignal.pcm($0) })
-        probeClient.onReady = { probeReady.signal() }
-        probeClient.onPCM = { if expectedProbe.contains($0) { probePackets.increment() } }
-        probeClient.onProbeReply = { data in
-            let reply = try! JSONDecoder().decode(AudioProbeReply.self, from: data)
-            if reply.state == "ready" { probeStarted.signal() }
-            if reply.state == "result" { measuredProbe = reply; probeStopped.signal() }
-            if reply.state == "error" { probeRejected.signal() }
-        }
-        probeClient.connect(host: "127.0.0.1", port: testPort)
-        precondition(probeReady.wait(timeout: .now() + 5) == .success)
-        probeClient.probe(1)
-        precondition(probeStarted.wait(timeout: .now() + 5) == .success)
-        wait({ probePackets.count() >= 10 })
-        probeClient.probe(0)
-        precondition(probeStopped.wait(timeout: .now() + 5) == .success)
-        precondition((measuredProbe?.stats?.sentPackets ?? 0) >= 10)
-        probeClient.probe(2)
-        precondition(probeRejected.wait(timeout: .now() + 5) == .success)
-        precondition(!backend.snapshot().microphone)
-        probeClient.disconnect()
-        wait({ !backend.snapshot().active })
-
-        // Permission denial is not silent audio. A late permission answer
-        // after cancellation must never reopen the virtual input.
-        backend.setInputInUse(false)
-        let probeIdle = DispatchSemaphore(value: 0)
-        let probeInUse = DispatchSemaphore(value: 0)
-        probeClient.onMicrophoneUse = {
-            if $0 == .idle { probeIdle.signal() }
-            if $0 == .inUse { probeInUse.signal() }
-        }
-        probeClient.connect(host: "127.0.0.1", port: testPort)
-        precondition(probeReady.wait(timeout: .now() + 5) == .success)
-        precondition(probeIdle.wait(timeout: .now() + 5) == .success)
-        backend.setProbePermission(false)
-        probeClient.probe(2)
-        precondition(probeRejected.wait(timeout: .now() + 5) == .success)
-        precondition(backend.snapshot().probeStarts == 0)
-        backend.setProbePermission(nil)
-        probeClient.probe(2)
-        wait({ backend.snapshot().permissionPending })
-        probeClient.disconnect()
-        wait({ !backend.snapshot().active })
-        backend.resolveProbePermission()
-        backend.setProbePermission(true)
-        probeClient.connect(host: "127.0.0.1", port: testPort)
-        precondition(probeReady.wait(timeout: .now() + 5) == .success)
-        precondition(backend.snapshot().probeStarts == 0)
-
-        // Real TCP carries the known sequence into the synthetic input;
-        // received counts and captured samples must describe the same data.
-        probeClient.probe(2)
-        precondition(probeStarted.wait(timeout: .now() + 5) == .success)
-        precondition(probeInUse.wait(timeout: .now() + 5) == .success)
-        let receivedBeforeProbe = backend.snapshot().received
-        probeClient.sendMicrophone(true)
-        for sequence in 0..<25 {
-            probeClient.sendPCM(AudioProbeSignal.pcm(sequence))
-            usleep(20000)
-        }
-        wait({ backend.snapshot().received == receivedBeforeProbe + 25 })
-        probeClient.sendMicrophone(false); probeClient.probe(0)
-        precondition(probeStopped.wait(timeout: .now() + 5) == .success)
-        precondition(measuredProbe?.result?.stats?.receivedPackets == 25)
-        precondition((measuredProbe?.result?.signalMS ?? 0) > 400)
-        probeClient.disconnect()
-        wait({ !backend.snapshot().active })
-
-        malformed(CrispAudioWire.encode(.pcm(CrispAudioWire.silence)))
-        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.probe(3)))
-        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.probeReply(Data("{}".utf8))))
-        malformed(Data([0, 0, 4, 1]))
-        malformed(Data([0, 0, 0, 5, 1]) + Data("bad!".utf8))
-        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.hello))
-        malformed(CrispAudioWire.encode(.hello) + CrispAudioWire.encode(.pcm(Data([0]))))
-        idleHandshakeExpires()
+        validateMalformedClients()
         wait({ !backend.snapshot().active })
         server.shutdown()
         var report: [String: Any] = ["result": "passed", "realControllerSource": true, "hardwareOpened": false,
