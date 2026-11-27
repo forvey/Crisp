@@ -4914,6 +4914,1158 @@
           }
         }
       }
+    },
+    "%@ failed (%d). Check System Settings → Privacy & Security → System Audio Recording." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 失败（%2$d）。请检查“系统设置 → 隐私与安全性 → 系统音频录制”。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 失敗（%2$d）。請檢查「系統設定 → 隱私權與安全性 → 系統音訊錄製」。"
+          }
+        }
+      }
+    },
+    "Another app is currently using Remote Microphone; stop input use before running diagnostics." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前已有应用正在使用远程麦克风，请停止后再试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目前已有應用程式正在使用遠端麥克風，請停止後再試。"
+          }
+        }
+      }
+    },
+    "Another app is currently using Remote Microphone; stop input use before running the self-test." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前已有应用在使用远程麦克风，请停止输入后再运行自检。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目前已有應用程式正在使用遠端麥克風，請停止輸入後再執行自檢。"
+          }
+        }
+      }
+    },
+    "Audio buffer allocation failed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频缓冲分配失败"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊緩衝區配置失敗"
+          }
+        }
+      }
+    },
+    "Audio diagnostics cannot override an active microphone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频诊断不能覆盖正在使用中的麦克风"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊診斷無法覆寫使用中的麥克風"
+          }
+        }
+      }
+    },
+    "Audio diagnostics result exceeded protocol limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频诊断结果超出协议长度上限"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊診斷結果超出通訊協定長度上限"
+          }
+        }
+      }
+    },
+    "Audio diagnostics timed out; input device released" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频诊断超时，已释放输入设备"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊診斷逾時，已釋放輸入裝置"
+          }
+        }
+      }
+    },
+    "Audio output device or sample rate changed; reconnect manually" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频输出设备或采样率已变化，请手动重连"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊輸出裝置或取樣率已變更，請手動重新連線"
+          }
+        }
+      }
+    },
+    "Audio protocol/version or PCM format mismatch" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频协议版本或 PCM 格式不匹配"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊通訊協定版本或 PCM 格式不相符"
+          }
+        }
+      }
+    },
+    "Audio resampling failed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频重采样失败"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊重新取樣失敗"
+          }
+        }
+      }
+    },
+    "Audio send backlog exceeded 100 ms; reconnect manually" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频发送积压超过 100 ms，请手动重连"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊傳送積壓超過 100 ms，請手動重新連線"
+          }
+        }
+      }
+    },
+    "Client hello must be the first message" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "客户端握手 hello 必须是首条消息"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用戶端交握 hello 必須是首條訊息"
+          }
+        }
+      }
+    },
+    "Client hello timed out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待客户端握手 hello 超时"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待用戶端交握 hello 逾時"
+          }
+        }
+      }
+    },
+    "Connected · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接 · %@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已連線 · %@"
+          }
+        }
+      }
+    },
+    "Copy Current LAN Key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拷贝当前局域网密钥"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拷貝目前區域網路金鑰"
+          }
+        }
+      }
+    },
+    "Crisp is not yet allowed to read audio input; self-test was not started." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crisp 尚未获准读取音频输入，未启动自检。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crisp 尚未獲准讀取音訊輸入，未啟動自檢。"
+          }
+        }
+      }
+    },
+    "Crisp lacks input recording permission on this Mac. Allow access in System Settings → Privacy & Security → Microphone and retry." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac 尚未授予 Crisp 麦克风输入录音权限；请在“系统设置 → 隐私与安全性 → 麦克风”允许后重试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac 尚未授予 Crisp 麥克風輸入錄音權限；請在「系統設定 → 隱私權與安全性 → 麥克風」允許後重試。"
+          }
+        }
+      }
+    },
+    "Diagnostics running (up to 60 s)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在诊断（最长 60 秒）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在診斷（最長 60 秒）"
+          }
+        }
+      }
+    },
+    "Disable LAN Key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停用局域网密钥"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停用區域網路金鑰"
+          }
+        }
+      }
+    },
+    "Empty audio test result" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频测试未读取到结果"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音訊測試未讀取到結果"
+          }
+        }
+      }
+    },
+    "Enable & Copy Random LAN Key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启用并拷贝随机密钥"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "啟用並拷貝隨機金鑰"
+          }
+        }
+      }
+    },
+    "HAL Driver: Not installed (listen-only)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAL 驱动：未安装（仅收听）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAL 驅動：未安裝（僅收聽）"
+          }
+        }
+      }
+    },
+    "HAL Driver: Not loaded (listen-only)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAL 驱动：未加载（仅收听）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAL 驅動：未載入（僅收聽）"
+          }
+        }
+      }
+    },
+    "HAL Driver: Ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAL 驱动：就绪"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAL 驅動：就緒"
+          }
+        }
+      }
+    },
+    "HAL Driver: Update to 1.0.4+ required for mic" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAL 驱动：麦克风需 1.0.4+ 版本"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAL 驅動：麥克風需 1.0.4+ 版本"
+          }
+        }
+      }
+    },
+    "Invalid TCP port: %u" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无效的 TCP 端口：%u"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無效的 TCP 通訊埠：%u"
+          }
+        }
+      }
+    },
+    "Invalid audio message length" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无效的音频消息长度"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無效的音訊訊息長度"
+          }
+        }
+      }
+    },
+    "Invalid audio test mode" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无效的音频测试模式"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無效的音訊測試模式"
+          }
+        }
+      }
+    },
+    "Invalid capture packet size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无效的系统音频采集包大小"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無效的系統音訊擷取封包大小"
+          }
+        }
+      }
+    },
+    "Invalid microphone control payload" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无效的麦克风控制消息长度"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無效的麥克風控制訊息長度"
+          }
+        }
+      }
+    },
+    "Invalid microphone-use payload" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无效的麦克风使用状态载荷"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無效的麥克風使用狀態內容"
+          }
+        }
+      }
+    },
+    "LAN Shared Key (TCP 49555)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "局域网共享密钥（TCP 49555）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "區域網路共享金鑰（TCP 49555）"
+          }
+        }
+      }
+    },
+    "LAN key enabled" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已启用局域网密钥"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已啟用區域網路金鑰"
+          }
+        }
+      }
+    },
+    "Leave empty to allow unauthenticated LAN peers" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "留空则允许无密钥连接以保持向后兼容"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "留空則允許無金鑰連線以保持向後相容"
+          }
+        }
+      }
+    },
+    "Mic In Use" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风使用中"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麥克風使用中"
+          }
+        }
+      }
+    },
+    "Mic Reader Waiting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风待用"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麥克風待命"
+          }
+        }
+      }
+    },
+    "Mic Standby" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风待机"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麥克風待機"
+          }
+        }
+      }
+    },
+    "Mic Unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风不可用"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麥克風無法使用"
+          }
+        }
+      }
+    },
+    "Network unavailable; reconnect manually" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网络暂不可用，请手动重连"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "網路暫時無法使用，請手動重新連線"
+          }
+        }
+      }
+    },
+    "No audio diagnostics currently in progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前没有正在进行的音频诊断"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目前沒有進行中的音訊診斷"
+          }
+        }
+      }
+    },
+    "Only the server may report microphone use" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有服务端可以上报麦克风使用状态"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有伺服端可以回報麥克風使用狀態"
+          }
+        }
+      }
+    },
+    "PCM payload must contain exactly 960 bytes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "PCM 载荷长度必须为 960 字节"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "PCM 資料長度必須為 960 位元組"
+          }
+        }
+      }
+    },
+    "Private tap device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "私有采集设备"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "私有擷取裝置"
+          }
+        }
+      }
+    },
+    "Rejected connection: invalid LAN key from %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已拒绝连接：来自 %@ 的局域网密钥无效"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已拒絕連線：來自 %@ 的區域網路金鑰無效"
+          }
+        }
+      }
+    },
+    "Rejected unauthenticated connection from %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已拒绝来自 %@ 的未鉴权连接"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已拒絕來自 %@ 的未鑑權連線"
+          }
+        }
+      }
+    },
+    "Remote Microphone is unavailable or currently in use by an app" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "远程麦克风不可用或正被其他应用使用"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "遠端麥克風無法使用或正被其他應用程式使用"
+          }
+        }
+      }
+    },
+    "Remote Microphone is unavailable or self-test is already running; install Crisp HAL 1.0.4+ and reconnect." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "远程麦克风不可用或自检已在进行中，请安装 Crisp HAL 1.0.4+ 后重连。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "遠端麥克風無法使用或自檢正在進行中，請安裝 Crisp HAL 1.0.4+ 後重新連線。"
+          }
+        }
+      }
+    },
+    "Remote Microphone is unavailable; install Crisp HAL 1.0.4+ and reconnect." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "远程麦克风不可用，请安装 Crisp HAL 1.0.4+ 后重连。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "遠端麥克風無法使用，請安裝 Crisp HAL 1.0.4+ 後重新連線。"
+          }
+        }
+      }
+    },
+    "Remote Microphone is unavailable; install Crisp HAL 1.0.4+ and reconnect. Listen-only audio does not require this component." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "远程麦克风不可用，请安装 Crisp HAL 1.0.4+ 后重连（仅收听扬声器不需要此组件）。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "遠端麥克風無法使用，請安裝 Crisp HAL 1.0.4+ 後重新連線（僅收聽揚聲器不須此元件）。"
+          }
+        }
+      }
+    },
+    "Remote audio options" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "远程音频选项"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "遠端音訊選項"
+          }
+        }
+      }
+    },
+    "Repeated hello is not permitted" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不允许重复发送 hello"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不允許重複傳送 hello"
+          }
+        }
+      }
+    },
+    "Restore last active display at launch" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动时恢复上次激活的虚拟屏"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "啟動時恢復上次啟用的虛擬顯示器"
+          }
+        }
+      }
+    },
+    "Rotate & Copy LAN Key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轮换并拷贝密钥"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "輪替並拷貝金鑰"
+          }
+        }
+      }
+    },
+    "Set Custom LAN Key…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置自定义密钥…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "設定自訂金鑰…"
+          }
+        }
+      }
+    },
+    "Start system audio capture" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动系统音频采集"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "啟動系統音訊擷取"
+          }
+        }
+      }
+    },
+    "System audio capture is not running" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统音频采集未在运行"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系統音訊擷取未在執行"
+          }
+        }
+      }
+    },
+    "System audio capture produced no buffers. Check recording permission, then reconnect." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统音频采集未产生有效数据。请检查“系统音频录制”权限后手动重连。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系統音訊擷取未產生有效資料。請檢查「系統音訊錄製」權限後手動重新連線。"
+          }
+        }
+      }
+    },
+    "System audio permission / process tap" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统音频录制权限 / 进程采集"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系統音訊錄製權限 / 處理程序擷取"
+          }
+        }
+      }
+    },
+    "TCP listener: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TCP 监听失败：%@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TCP 監聽失敗：%@"
+          }
+        }
+      }
+    },
+    "TCP: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TCP 连接错误：%@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TCP 連線錯誤：%@"
+          }
+        }
+      }
+    },
+    "Tap IO callback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "采集 IO 回调"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "擷取 IO 回呼"
+          }
+        }
+      }
+    },
+    "Tap format" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "采集音频格式"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "擷取音訊格式"
+          }
+        }
+      }
+    },
+    "The new virtual display did not come online in time. Your previous display was kept." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新虚拟屏未能及时上线，已保留原显示器。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新虛擬顯示器未能及時上線，已保留原顯示器。"
+          }
+        }
+      }
+    },
+    "This audio backend does not support input self-test" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前音频后端不支持输入自检"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目前音訊後端不支援輸入自檢"
+          }
+        }
+      }
+    },
+    "Unable to read test tone from Remote Microphone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未能从远程麦克风读到测试音"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未能從遠端麥克風讀到測試音"
+          }
+        }
+      }
+    },
+    "Unknown audio kind or invalid payload length" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知的音频消息类型或载荷长度无效"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知的音訊訊息類型或資料長度無效"
+          }
+        }
+      }
+    },
+    "Unknown audio message kind" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知的音频消息类型"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知的音訊訊息類型"
+          }
+        }
+      }
+    },
+    "Unsupported audio sample rate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不支持的音频采样率"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不支援的音訊取樣率"
+          }
+        }
+      }
+    },
+    "Unsupported process-tap format; reconnect after changing the output device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不支持当前系统采集音频格式；请切换输出设备后重连"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不支援目前系統擷取音訊格式；請切換輸出裝置後重新連線"
+          }
+        }
+      }
+    },
+    "Virtual microphone write failed (%d); reconnect after checking the device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "虚拟麦克风写入失败（%d）；请检查设备状态后重连"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "虛擬麥克風寫入失敗（%d）；請檢查裝置狀態後重新連線"
+          }
+        }
+      }
+    },
+    "Waiting for Connection · Port %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待连接 · 端口 %lld"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待連線 · 通訊埠 %lld"
+          }
+        }
+      }
+    },
+    "Waiting for Connection · Port %lld (Key Required)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待连接 · 端口 %lld（需密钥）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待連線 · 通訊埠 %lld（須金鑰）"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
