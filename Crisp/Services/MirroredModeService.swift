@@ -230,10 +230,13 @@ final class MirroredModeService: ObservableObject {
         // Registration pops macOS's picker, which steals key focus and would trip the
         // panel's auto-dismiss; same suppression as VirtualDisplayService.create.
         PanelOpenGuard.suppressAutoDismiss = true
+        let suppressGeneration = PanelOpenGuard.suppressGeneration
         defer {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
-                PanelOpenGuard.suppressAutoDismiss = false
+                if PanelOpenGuard.suppressGeneration == suppressGeneration {
+                    PanelOpenGuard.suppressAutoDismiss = false
+                }
             }
         }
 

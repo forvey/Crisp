@@ -45,12 +45,16 @@ final class VirtualDisplayActivationGate {
         pendingApplications -= 1
     }
 
-    /// Re-query the actual display list after each wait; neither dropping an object nor
-    /// receiving a removal notification proves WindowServer has finished releasing it.
+    /// Create-Before-Destroy activation: wait for any previously retiring virtual
+    /// display to leave the online list, create and verify the replacement online,
+    /// then release the previous active virtual display so a failed creation never
+    /// leaves a headless Mac without a display.
     func activate(
-        release: () -> Void,
-        isReleased: () -> Bool?,
+        isRetiringClear: () -> Bool?,
         create: @MainActor () async -> Bool,
+        releasePrevious: () -> Void,
+        arePreviousReleased: () -> Bool?,
+        afterRelease: (@MainActor () async -> Void)? = nil,
         attempts: Int = 30,
         pause: @MainActor () async throws -> Void = { try await Task.sleep(for: .milliseconds(100)) }
     ) async -> Result {
@@ -63,13 +67,10 @@ final class VirtualDisplayActivationGate {
             running = false
         }
 
-        release()
         for attempt in 0...max(0, attempts) {
             guard !Task.isCancelled else { return .cancelled }
-            guard let released = isReleased() else { return .enumerationFailed }
-            if released {
-                return await create() ? .activated : .creationFailed
-            }
+            guard let clear = isRetiringClear() else { return .enumerationFailed }
+            if clear { break }
             guard attempt < attempts else { return .releaseTimedOut }
             do {
                 try await pause()
@@ -77,6 +78,23 @@ final class VirtualDisplayActivationGate {
                 return .cancelled
             }
         }
-        return .releaseTimedOut
+
+        guard !Task.isCancelled else { return .cancelled }
+        guard await create() else {
+            return Task.isCancelled ? .cancelled : .creationFailed
+        }
+
+        releasePrevious()
+        for _ in 0..<max(0, attempts) {
+            guard !Task.isCancelled else { break }
+            if arePreviousReleased() == true { break }
+            do {
+                try await pause()
+            } catch {
+                break
+            }
+        }
+        await afterRelease?()
+        return .activated
     }
 }

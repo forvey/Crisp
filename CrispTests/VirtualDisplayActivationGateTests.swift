@@ -34,38 +34,83 @@ final class VirtualDisplayActivationGateTests: XCTestCase {
         gate.applicationFinished()
     }
 
-    func testWaitsForActualRemovalBeforeCreatingReplacement() async {
+    func testCreateBeforeDestroyCreatesBeforeReleasingAndWaitsForTeardown() async {
         let gate = VirtualDisplayActivationGate()
         var events: [String] = []
         var oldDisplayOnline = true
         var waits = 0
         let result = await gate.activate(
-            release: { events.append("release") },
-            isReleased: { !oldDisplayOnline },
+            isRetiringClear: { true },
             create: {
-                XCTAssertFalse(oldDisplayOnline)
+                XCTAssertTrue(oldDisplayOnline)
                 events.append("create")
                 return true
             },
+            releasePrevious: { events.append("release") },
+            arePreviousReleased: { !oldDisplayOnline },
+            afterRelease: { events.append("afterRelease") },
             pause: {
                 waits += 1
                 events.append("wait")
-                // Dropping the object did not remove it immediately; nor did the first wait.
                 if waits == 2 { oldDisplayOnline = false }
             }
         )
         XCTAssertEqual(result, .activated)
-        XCTAssertEqual(events, ["release", "wait", "wait", "create"])
+        XCTAssertEqual(events, ["create", "release", "wait", "wait", "afterRelease"])
         XCTAssertFalse(gate.isBusy)
     }
 
-    func testReleaseTimeoutDoesNotCreateSecondDisplay() async {
+    func testCreationFailurePreservesExistingDisplayWithoutReleasing() async {
+        let gate = VirtualDisplayActivationGate()
+        var released = false
+        let result = await gate.activate(
+            isRetiringClear: { true },
+            create: { false },
+            releasePrevious: { released = true },
+            arePreviousReleased: { true },
+            afterRelease: { XCTFail("Mode restore must not run on failure") }
+        )
+        XCTAssertEqual(result, .creationFailed)
+        XCTAssertFalse(released)
+        XCTAssertFalse(gate.isBusy)
+    }
+
+    func testWaitsForPreviouslyRetiringDisplayBeforeCreatingReplacement() async {
+        let gate = VirtualDisplayActivationGate()
+        var events: [String] = []
+        var retiringOnline = true
+        var waits = 0
+        let result = await gate.activate(
+            isRetiringClear: { !retiringOnline },
+            create: {
+                XCTAssertFalse(retiringOnline)
+                events.append("create")
+                return true
+            },
+            releasePrevious: { events.append("release") },
+            arePreviousReleased: { true },
+            pause: {
+                waits += 1
+                events.append("wait")
+                if waits == 2 { retiringOnline = false }
+            }
+        )
+        XCTAssertEqual(result, .activated)
+        XCTAssertEqual(events, ["wait", "wait", "create", "release"])
+        XCTAssertFalse(gate.isBusy)
+    }
+
+    func testRetiringTimeoutDoesNotCreateSecondDisplay() async {
         let gate = VirtualDisplayActivationGate()
         var created = false
         var waits = 0
         let result = await gate.activate(
-            release: {}, isReleased: { false }, create: { created = true; return true },
-            attempts: 3, pause: { waits += 1 }
+            isRetiringClear: { false },
+            create: { created = true; return true },
+            releasePrevious: { XCTFail("Must not release when creation did not run") },
+            arePreviousReleased: { true },
+            attempts: 3,
+            pause: { waits += 1 }
         )
         XCTAssertEqual(result, .releaseTimedOut)
         XCTAssertEqual(waits, 3)
@@ -73,25 +118,14 @@ final class VirtualDisplayActivationGateTests: XCTestCase {
         XCTAssertFalse(gate.isBusy)
     }
 
-    func testManuallyDeactivatedDisplayStillBlocksUntilOffline() async {
-        // No owned object remains to release, but the previous framebuffer is still online.
-        let gate = VirtualDisplayActivationGate()
-        var oldDisplayOnline = true
-        var created = false
-        let result = await gate.activate(
-            release: {}, isReleased: { !oldDisplayOnline },
-            create: { created = true; return true },
-            pause: { oldDisplayOnline = false }
-        )
-        XCTAssertEqual(result, .activated)
-        XCTAssertTrue(created)
-    }
-
     func testEnumerationFailureIsNotTreatedAsEmptyDisplayList() async {
         let gate = VirtualDisplayActivationGate()
         var created = false
         let result = await gate.activate(
-            release: {}, isReleased: { nil }, create: { created = true; return true }
+            isRetiringClear: { nil },
+            create: { created = true; return true },
+            releasePrevious: {},
+            arePreviousReleased: { true }
         )
         XCTAssertEqual(result, .enumerationFailed)
         XCTAssertFalse(created)
@@ -101,31 +135,36 @@ final class VirtualDisplayActivationGateTests: XCTestCase {
         let gate = VirtualDisplayActivationGate()
         let (entered, signal) = AsyncStream<Void>.makeStream()
         var resume: CheckedContinuation<Void, Never>?
-        var released = false
+        var retiringClear = false
         var releaseCount = 0
         var createCount = 0
         let first = Task {
             await gate.activate(
-                release: { releaseCount += 1 }, isReleased: { released },
+                isRetiringClear: { retiringClear },
                 create: { createCount += 1; return true },
+                releasePrevious: { releaseCount += 1 },
+                arePreviousReleased: { true },
                 pause: {
                     await withCheckedContinuation { resume = $0; signal.yield() }
-                    released = true
+                    retiringClear = true
                 }
             )
         }
         for await _ in entered { break }
         let second = await gate.activate(
-            release: { releaseCount += 1 }, isReleased: { true },
-            create: { createCount += 1; return true }
+            isRetiringClear: { true },
+            create: { createCount += 1; return true },
+            releasePrevious: { releaseCount += 1 },
+            arePreviousReleased: { true }
         )
         XCTAssertEqual(second, .busy)
-        XCTAssertEqual(releaseCount, 1)
+        XCTAssertEqual(releaseCount, 0)
         XCTAssertEqual(createCount, 0)
         resume?.resume()
         let result = await first.value
         XCTAssertEqual(result, .activated)
         XCTAssertEqual(createCount, 1)
+        XCTAssertEqual(releaseCount, 1)
     }
 
     func testGateStaysLockedWhileCreationIsSuspended() async {
@@ -133,14 +172,21 @@ final class VirtualDisplayActivationGateTests: XCTestCase {
         let (entered, signal) = AsyncStream<Void>.makeStream()
         var resume: CheckedContinuation<Bool, Never>?
         let first = Task {
-            await gate.activate(release: {}, isReleased: { true }, create: {
-                await withCheckedContinuation { resume = $0; signal.yield() }
-            })
+            await gate.activate(
+                isRetiringClear: { true },
+                create: {
+                    await withCheckedContinuation { resume = $0; signal.yield() }
+                },
+                releasePrevious: {},
+                arePreviousReleased: { true }
+            )
         }
         for await _ in entered { break }
         let second = await gate.activate(
-            release: { XCTFail("Concurrent activation must not release the new display") },
-            isReleased: { true }, create: { XCTFail("Concurrent creation"); return true }
+            isRetiringClear: { true },
+            create: { XCTFail("Concurrent creation"); return true },
+            releasePrevious: { XCTFail("Concurrent activation must not release the active display") },
+            arePreviousReleased: { true }
         )
         XCTAssertEqual(second, .busy)
         resume?.resume(returning: true)
@@ -151,15 +197,22 @@ final class VirtualDisplayActivationGateTests: XCTestCase {
 
     func testTimedOutApplyBlocksRetryUntilRealIPCFinishes() async {
         let gate = VirtualDisplayActivationGate()
-        let timeout = await gate.activate(release: {}, isReleased: { true }, create: {
-            gate.applicationStarted()
-            return false // The timeout wrapper returned, but the IPC is still running.
-        })
+        let timeout = await gate.activate(
+            isRetiringClear: { true },
+            create: {
+                gate.applicationStarted()
+                return false // The timeout wrapper returned, but the IPC is still running.
+            },
+            releasePrevious: { XCTFail("Failed creation must not release existing display") },
+            arePreviousReleased: { true }
+        )
         XCTAssertEqual(timeout, .creationFailed)
         XCTAssertTrue(gate.isBusy)
         let prematureRetry = await gate.activate(
-            release: { XCTFail("Pending IPC still owns its display") },
-            isReleased: { true }, create: { XCTFail("Pending IPC can still register a display"); return true }
+            isRetiringClear: { true },
+            create: { XCTFail("Pending IPC can still register a display"); return true },
+            releasePrevious: { XCTFail("Pending IPC still owns its display") },
+            arePreviousReleased: { true }
         )
         XCTAssertEqual(prematureRetry, .busy)
         gate.applicationFinished()
@@ -167,22 +220,35 @@ final class VirtualDisplayActivationGateTests: XCTestCase {
 
         // A late apply may have registered a screen; finishing the IPC alone is not enough.
         let lateDisplayRetry = await gate.activate(
-            release: {}, isReleased: { false }, create: { XCTFail("Late display still online"); return true },
+            isRetiringClear: { false },
+            create: { XCTFail("Late display still online"); return true },
+            releasePrevious: {},
+            arePreviousReleased: { true },
             attempts: 0
         )
         XCTAssertEqual(lateDisplayRetry, .releaseTimedOut)
-        let safeRetry = await gate.activate(release: {}, isReleased: { true }, create: { true })
+        let safeRetry = await gate.activate(
+            isRetiringClear: { true },
+            create: { true },
+            releasePrevious: {},
+            arePreviousReleased: { true }
+        )
         XCTAssertEqual(safeRetry, .activated)
     }
 
     func testApplyCompletionDoesNotUnlockAnOngoingActivation() async {
         let gate = VirtualDisplayActivationGate()
-        let result = await gate.activate(release: {}, isReleased: { true }, create: {
-            gate.applicationStarted()
-            gate.applicationFinished()
-            XCTAssertTrue(gate.isBusy)
-            return true
-        })
+        let result = await gate.activate(
+            isRetiringClear: { true },
+            create: {
+                gate.applicationStarted()
+                gate.applicationFinished()
+                XCTAssertTrue(gate.isBusy)
+                return true
+            },
+            releasePrevious: {},
+            arePreviousReleased: { true }
+        )
         XCTAssertEqual(result, .activated)
         XCTAssertFalse(gate.isBusy)
     }
@@ -191,8 +257,10 @@ final class VirtualDisplayActivationGateTests: XCTestCase {
         let gate = VirtualDisplayActivationGate()
         let task = Task {
             await gate.activate(
-                release: { XCTFail("Cancelled request must preserve current display") },
-                isReleased: { true }, create: { XCTFail("Cancelled request"); return true }
+                isRetiringClear: { true },
+                create: { XCTFail("Cancelled request"); return true },
+                releasePrevious: { XCTFail("Cancelled request must preserve current display") },
+                arePreviousReleased: { true }
             )
         }
         task.cancel()
@@ -201,22 +269,52 @@ final class VirtualDisplayActivationGateTests: XCTestCase {
         XCTAssertFalse(gate.isBusy)
     }
 
-    func testCancellationDuringReleaseWaitDoesNotCreate() async {
+    func testCancellationDuringRetiringWaitDoesNotCreateOrRelease() async {
         let gate = VirtualDisplayActivationGate()
         let result = await gate.activate(
-            release: {}, isReleased: { false }, create: { XCTFail("Cancelled wait"); return true },
+            isRetiringClear: { false },
+            create: { XCTFail("Cancelled wait"); return true },
+            releasePrevious: { XCTFail("Cancelled wait must not release") },
+            arePreviousReleased: { true },
             pause: { throw CancellationError() }
         )
         XCTAssertEqual(result, .cancelled)
         XCTAssertFalse(gate.isBusy)
     }
 
-    func testCreationFailureAllowsSafeRetryAfterRelease() async {
+    func testCreationFailureAllowsSafeRetryAfterward() async {
         let gate = VirtualDisplayActivationGate()
-        let failure = await gate.activate(release: {}, isReleased: { true }, create: { false })
+        let failure = await gate.activate(
+            isRetiringClear: { true },
+            create: { false },
+            releasePrevious: { XCTFail("Failed creation must not release") },
+            arePreviousReleased: { true }
+        )
         XCTAssertEqual(failure, .creationFailed)
         XCTAssertFalse(gate.isBusy)
-        let retry = await gate.activate(release: {}, isReleased: { true }, create: { true })
+        let retry = await gate.activate(
+            isRetiringClear: { true },
+            create: { true },
+            releasePrevious: {},
+            arePreviousReleased: { true }
+        )
         XCTAssertEqual(retry, .activated)
+    }
+
+    func testSlowOldDisplayTeardownAfterSuccessfulCreateStillReturnsActivated() async {
+        let gate = VirtualDisplayActivationGate()
+        var afterReleaseCalled = false
+        let result = await gate.activate(
+            isRetiringClear: { true },
+            create: { true },
+            releasePrevious: {},
+            arePreviousReleased: { false },
+            afterRelease: { afterReleaseCalled = true },
+            attempts: 2,
+            pause: {}
+        )
+        XCTAssertEqual(result, .activated)
+        XCTAssertTrue(afterReleaseCalled)
+        XCTAssertFalse(gate.isBusy)
     }
 }

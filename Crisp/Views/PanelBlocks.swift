@@ -10,7 +10,6 @@ import AppKit
 @MainActor
 final class PanelSectionState: ObservableObject {
     @Published var showTools = false
-    @Published var showVirtualDisplays = true
     @Published var showArrangement = false
     @Published var showSettings = false
     @Published var expandedDisplayIDs: Set<CGDirectDisplayID> = []
@@ -105,15 +104,36 @@ struct ExpandableRowStateful: View {
     }
 }
 
-/// Virtual displays are reachable directly from the main panel.
+/// Virtual displays are shown directly in the main panel with a master switch.
 struct VirtualDisplaysHeadBlock: View {
-    @ObservedObject var state: PanelSectionState
+    @ObservedObject private var service = VirtualDisplayService.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionDivider()
-            ExpandableRowStateful(icon: "display.2", iconActive: false,
-                                  label: "Virtual Displays", state: state, key: \.showVirtualDisplays)
+            HStack(spacing: 8) {
+                SectionHeader(title: "Virtual Displays")
+                Spacer()
+                if !service.configs.isEmpty {
+                    Toggle("", isOn: Binding(
+                        get: { !service.activeConfigIDs.isEmpty },
+                        set: { enabled in
+                            guard PanelOpenGuard.allowsActivation, !service.isSwitching else { return }
+                            if enabled {
+                                Task { @MainActor in await service.activatePreferredOrFirst() }
+                            } else {
+                                service.destroyAllActive()
+                            }
+                        }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .disabled(service.isSwitching)
+                    .padding(.trailing, 12)
+                    .accessibilityLabel("Virtual Displays")
+                }
+            }
         }
     }
 }

@@ -17,11 +17,6 @@ struct VirtualDisplayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Only one virtual display can be active. Activating another turns the current one off.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
             if service.configs.isEmpty && !showCreateForm {
                 // Centered empty-state idiom, not an orphaned indented row (docs/DESIGN.md).
                 Text("No virtual displays yet")
@@ -46,17 +41,10 @@ struct VirtualDisplayView: View {
                     } else {
                         VirtualDisplayRow(
                             config: config,
-                            isActive: Binding(
-                                get: { service.isActive(config.id) },
-                                set: { enabled in
-                                    if enabled {
-                                        handleActivate(config)
-                                    } else {
-                                        service.destroy(configID: config.id)
-                                    }
-                                }
-                            ),
+                            isActive: service.isActive(config.id),
                             isActivating: activatingID == config.id,
+                            onActivate: { handleActivate(config) },
+                            onDeactivate: { service.destroy(configID: config.id) },
                             onEdit: {
                                 withAnimation(.panelResize) {
                                     editingID = config.id
@@ -93,6 +81,7 @@ struct VirtualDisplayView: View {
                 .transition(.opacity)
             } else {
                 Button(action: {
+                    guard PanelOpenGuard.allowsActivation else { return }
                     // Focus the name field the instant the reveal finishes.
                     withAnimation(.panelResize) {
                         showCreateForm = true
@@ -114,6 +103,28 @@ struct VirtualDisplayView: View {
                 .menuRowHover(createHovered)
                 .onHover { createHovered = $0 }
                 .transition(.opacity)
+            }
+
+            if !service.configs.isEmpty {
+                Toggle(isOn: Binding(
+                    get: { service.restoreAtLaunch },
+                    set: { enabled in
+                        guard PanelOpenGuard.allowsActivation else { return }
+                        service.setRestoreAtLaunch(enabled)
+                    }
+                )) {
+                    HStack(spacing: 8) {
+                        MenuItemIcon(systemName: "bolt.fill", color: .green, active: service.restoreAtLaunch)
+                            .accessibilityHidden(true)
+                        Text("Restore last active display at launch")
+                            .font(.body)
+                        Spacer()
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 3)
             }
         }
         .disabled(service.isSwitching)
@@ -143,11 +154,12 @@ struct VirtualDisplayView: View {
             PanelOpenGuard.isConfirmationActive = (newValue != nil)
         }
         .onDisappear { PanelOpenGuard.isConfirmationActive = false }
-        // Collapse inline create/edit forms when the panel closes, so it reopens fresh.
+        // Collapse inline create/edit forms and clear transient errors when the panel closes.
         .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidClose)) { _ in
             showCreateForm = false
             editingID = nil
             createError = nil
+            service.clearError()
         }
     }
 
@@ -212,8 +224,10 @@ struct VirtualDisplayView: View {
 
 struct VirtualDisplayRow: View {
     let config: VirtualDisplayService.VirtualDisplayConfig
-    @Binding var isActive: Bool
+    let isActive: Bool
     let isActivating: Bool
+    let onActivate: () -> Void
+    let onDeactivate: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -223,32 +237,40 @@ struct VirtualDisplayRow: View {
         HStack(spacing: 8) {
             HStack(spacing: 8) {
                 MenuItemIcon(systemName: "display.2", color: .blue, active: isActive)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(config.name)
                         .font(.body)
+                        .fontWeight(isActive ? .semibold : .regular)
                         .lineLimit(1)
                     Text(verbatim: "\(config.desktopMode.width)×\(config.desktopMode.height)"
                          + (config.desktopMode.hiDPI ? " HiDPI" : ""))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
+                Spacer()
+                if isActivating {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                        .opacity(isActive ? 1 : 0)
+                        .accessibilityHidden(!isActive)
+                        .accessibilityLabel("Currently active")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture {
-                if !isActive && !isActivating { isActive = true }
-            }
-
-            if isActivating {
-                ProgressView()
-                    .scaleEffect(0.6)
-                    .frame(width: 16, height: 16)
-            } else {
-                Toggle(config.name, isOn: $isActive)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .fixedSize()
+                guard PanelOpenGuard.allowsActivation, !isActivating else { return }
+                if isActive {
+                    onDeactivate()
+                } else {
+                    onActivate()
+                }
             }
 
             Menu {
@@ -303,7 +325,6 @@ struct CreateVirtualDisplayForm: View {
     @State private var selectedPreset: Int
     @State private var customWidth: String
     @State private var customHeight: String
-    @State private var autoCreate: Bool
     @State private var hiDPI: Bool
     @State private var refreshRate: Double
 
@@ -331,7 +352,6 @@ struct CreateVirtualDisplayForm: View {
         self.onCancel = onCancel
         self.onConfirm = onConfirm
         _name = State(initialValue: editing?.name ?? String(localized: "Virtual Display"))
-        _autoCreate = State(initialValue: editing?.autoCreate ?? true)
         _hiDPI = State(initialValue: editing?.desktopMode.hiDPI ?? true)
         _refreshRate = State(initialValue: editing?.refreshRate ?? 60)
         // A non-preset size selects "Custom" and prefills width/height.
@@ -419,8 +439,6 @@ struct CreateVirtualDisplayForm: View {
                         Text(verbatim: "\(rate.formatted()) Hz").tag(rate)
                     }
                 }
-                CaptureToggleRow(icon: "bolt.fill", color: .green,
-                                 label: "Create at launch", isOn: $autoCreate)
             }
 
             HStack(spacing: 10) {
@@ -505,7 +523,7 @@ struct CreateVirtualDisplayForm: View {
             name: name.isEmpty ? String(localized: "Virtual Display") : name,
             desktopMode: mode,
             refreshRate: refreshRate,
-            autoCreate: autoCreate
+            autoCreate: editing?.autoCreate ?? false
         ) else { return }
         onConfirm(config)
     }

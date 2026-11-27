@@ -678,20 +678,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             || CoreBrightnessService.shared.trueToneAvailable {
             blocks.append(block("effects") { ScreenEffectsView() })
         }
-        let virtualDisplaysHead = block("vdhead") { VirtualDisplaysHeadBlock(state: state) }
-        virtualDisplaysHead.liveInFlight = true
-        blocks.append(virtualDisplaysHead)
-        blocks.append(block("vdrows", isOpen: { state.showVirtualDisplays }) {
+        blocks.append(block("vdhead") { VirtualDisplaysHeadBlock() })
+        blocks.append(block("vdrows") {
             VirtualDisplayView()
-                .padding(.leading, 8)
         })
-        blocks.append(block("presets") {
-            VStack(alignment: .leading, spacing: 0) {
-                SectionDivider()
-                SectionHeader(title: "Presets")
-                PresetListView()
-            }
-        })
+        blocks.append(block("remoteAudio") { CrispRemoteAudioRow() })
         let toolshead = block("toolshead") {
             VStack(alignment: .leading, spacing: 0) {
                 SectionDivider()
@@ -887,9 +878,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Native menus appear at full size with all content visible at once;
         // only size changes AFTER opening animate.
-        if !sectionState.showVirtualDisplays {
-            sectionState.showVirtualDisplays = true
-        }
         positionPanel(p)
         canvas.retargetLinkIfNeeded()
         canvas.wakeSpring()
