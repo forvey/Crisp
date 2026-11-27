@@ -43,8 +43,6 @@ final class PresetService: ObservableObject, @unchecked Sendable {
 
     func savePresets() {
         SettingsService.shared.save(presets, filename: filename)
-        // Shortcuts live on presets, so any preset change may add/remove/steal one.
-        HotkeyService.shared.syncRegistrations()
     }
 
     // MARK: - CRUD

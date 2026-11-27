@@ -2,7 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import os.log
 
-/// Registers all of Crisp's global shortcuts via Carbon RegisterEventHotKey and dispatches presses to their actions (issue #61).
+/// Registers Crisp's global shortcuts via Carbon RegisterEventHotKey and dispatches presses to their actions (issue #61).
 ///
 /// Uses Carbon RegisterEventHotKey, which works in an LSUIElement app with no
 /// Accessibility permission (unlike the CGEventTap the brightness keys need) and
@@ -16,7 +16,6 @@ final class HotkeyService {
 
     /// What a registered hotkey triggers.
     private enum Target {
-        case preset(UUID)
         case hidpiToggle
         case brightness(up: Bool)
     }
@@ -50,18 +49,15 @@ final class HotkeyService {
         syncRegistrations()
     }
 
-    /// Rebuilds every registration from current state: one hotkey per preset
-    /// with a shortcut, plus the static Toggle HiDPI action. Idempotent; called
-    /// from launch, PresetService.savePresets(), and the recorder.
+    /// Rebuilds every registration from current state: the curated global
+    /// shortcuts configured in Settings. Idempotent; called from launch and
+    /// the shortcut recorder.
     func syncRegistrations() {
         for reg in registrations.values { UnregisterEventHotKey(reg.ref) }
         registrations = [:]
         guard suspensions == 0 else {
             Self.log.info("synced: suspended (\(self.suspensions) recorder(s)), nothing registered")
             return
-        }
-        for preset in PresetService.shared.presets {
-            if let shortcut = preset.shortcut { register(shortcut, for: .preset(preset.id)) }
         }
         if let shortcut = SettingsService.shared.hidpiShortcut {
             register(shortcut, for: .hidpiToggle)
@@ -125,12 +121,6 @@ final class HotkeyService {
     private func fire(id: UInt32) {
         Self.log.info("hotkey press: id \(id), known=\(self.registrations[id] != nil)")
         switch registrations[id]?.target {
-        case .preset(let presetID):
-            // Same guards as tapping the preset row: no-op while one applies.
-            guard let preset = PresetService.shared.presets.first(where: { $0.id == presetID }),
-                  !PresetService.shared.isApplying
-            else { return }
-            Task { await PresetService.shared.applyPreset(preset) }
         case .hidpiToggle:
             toggleHiDPIUnderCursor()
         case .brightness(let up):

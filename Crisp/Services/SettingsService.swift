@@ -183,7 +183,7 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// One combo, one action: clears `shortcut` off every other row and preset holding it
+    /// One combo, one action: clears `shortcut` off every other row holding it
     /// (Carbon refuses a second registration of the same combo), then `assign` gives it here.
     func assignStaticShortcut(_ shortcut: KeyboardShortcut?, assign: (KeyboardShortcut?) -> Void) {
         if let shortcut {
@@ -192,11 +192,7 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
             if brightnessDownShortcut?.sameKeys(as: shortcut) == true { brightnessDownShortcut = nil }
         }
         assign(shortcut)
-        if let shortcut {
-            PresetService.shared.stealShortcutFromPresets(shortcut)  // persists and syncs
-        } else {
-            HotkeyService.shared.syncRegistrations()
-        }
+        HotkeyService.shared.syncRegistrations()
     }
 
     // MARK: - Per-Display Settings
