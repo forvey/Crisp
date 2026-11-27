@@ -36,19 +36,45 @@ struct AudioProbeResult: Codable, Equatable, Sendable {
 
     var text: String {
         let verdict: String
-        if observationLost > 0 { verdict = "采样不完整，不能判定通过" }
-        else if seconds == 0 { verdict = "未收到输入采样，不能判定通过" }
-        else if seconds < 12 { verdict = "采样时间不足，不能判定通过" }
-        else if signalMS == 0, peak == 0 { verdict = "采样全为静音，未收到测试音" }
-        else if signalMS == 0 { verdict = "已有采样，但未识别到测试音，不能判定通过" }
-        else if signalMS < 6000 { verdict = "识别到的测试音不足，不能判定通过" }
-        else if (leadingMS ?? 0) > 500 || (trailingMS ?? 0) > 500 {
+        if observationLost > 0 {
+            verdict = "采样不完整，不能判定通过"
+        } else if seconds == 0 {
+            verdict = "未收到输入采样，不能判定通过"
+        } else if seconds < 12 {
+            verdict = "采样时间不足，不能判定通过"
+        } else if signalMS == 0, peak == 0 {
+            verdict = "采样全为静音，未收到测试音"
+        } else if signalMS == 0 {
+            verdict = "已有采样，但未识别到测试音，不能判定通过"
+        } else if signalMS < 6000 {
+            verdict = "识别到的测试音不足，不能判定通过"
+        } else if (leadingMS ?? 0) > 500 || (trailingMS ?? 0) > 500 {
             verdict = "开头或结尾超过 500 ms 未识别到测试音，不能判定通过"
+        } else if longestGapMS >= 30 || missingMS > 0 || repeatedMS > 0 {
+            verdict = "检测到音频不连续"
+        } else {
+            verdict = "本次未检测到 ≥30 ms 断音或测试音跳段/重复"
         }
-        else if longestGapMS >= 30 || missingMS > 0 || repeatedMS > 0 { verdict = "检测到音频不连续" }
-        else { verdict = "本次未检测到 ≥30 ms 断音或测试音跳段/重复" }
         let level = rms.map { String(format: "，平均幅度 %.6f（满幅 1）", $0) } ?? ""
         return "\(verdict)；采样 \(Int(seconds * 1000)) ms，有效信号 \(signalMS) ms，最长未识别段 \(longestGapMS) ms，跳段约 \(missingMS) ms，重复约 \(repeatedMS) ms，观察缺口 \(observationLost)\(level)"
+    }
+
+    private static func frequencyID(_ samples: [Float], start: Int, width: Int,
+                                    energy: Double, coefficients: [Double]) -> Int? {
+        var winner: Int?, peak = 0.0
+        if energy / Double(width) > 0.00001 {
+            for id in 0..<64 {
+                var a = 0.0, b = 0.0
+                for index in start..<start + width {
+                    let value = Double(samples[index]) + coefficients[id] * a - b
+                    b = a; a = value
+                }
+                let power = a * a + b * b - coefficients[id] * a * b
+                if power > peak { peak = power; winner = id }
+            }
+            if peak * 2 / (Double(width) * energy) < 0.7 { winner = nil }
+        }
+        return winner
     }
 
     static func analyze(_ samples: [Float], rate: Double, lost: Int) -> Self {
@@ -68,29 +94,19 @@ struct AudioProbeResult: Codable, Equatable, Sendable {
         var gap = 0, same = 0
         for start in stride(from: 0, through: max(-1, samples.count - width), by: width) {
             let energy = samples[start..<start + width].reduce(0.0) { $0 + Double($1 * $1) }
-            var winner: Int?, peak = 0.0
-            if energy / Double(width) > 0.00001 {
-                for id in 0..<64 {
-                    var a = 0.0, b = 0.0
-                    for index in start..<start + width {
-                        let value = Double(samples[index]) + coefficients[id] * a - b
-                        b = a; a = value
-                    }
-                    let power = a * a + b * b - coefficients[id] * a * b
-                    if power > peak { peak = power; winner = id }
-                }
-                if peak * 2 / (Double(width) * energy) < 0.7 { winner = nil }
-            }
+            let winner = frequencyID(samples, start: start, width: width, energy: energy, coefficients: coefficients)
             guard let id = winner else {
-                if energy == 0 { result.silentMS! += 10 }
-                else { result.unrecognizedMS! += 10 }
+                if energy == 0 {
+                    result.silentMS = (result.silentMS ?? 0) + 10
+                } else {
+                    result.unrecognizedMS = (result.unrecognizedMS ?? 0) + 10
+                }
                 gap += 10
                 continue
             }
             // Exclude normal startup/shutdown silence from in-stream gaps.
             // If no test tone is ever seen, report the whole missing span.
-            if previous == nil { result.leadingMS = gap }
-            else { result.longestGapMS = max(result.longestGapMS, gap) }
+            if previous == nil { result.leadingMS = gap } else { result.longestGapMS = max(result.longestGapMS, gap) }
             result.signalMS += 10
             if let previous {
                 let step = (id - previous + 64) % 64
@@ -106,8 +122,7 @@ struct AudioProbeResult: Codable, Equatable, Sendable {
             } else { same = 10 }
             previous = id; gap = 0
         }
-        if previous == nil { result.leadingMS = gap; result.longestGapMS = gap }
-        else { result.trailingMS = gap }
+        if previous == nil { result.leadingMS = gap; result.longestGapMS = gap } else { result.trailingMS = gap }
         return result
     }
 }
@@ -138,8 +153,11 @@ final class AudioProbeCapture: @unchecked Sendable {
         if let expected, abs(sampleTime - expected) > 2 { lost += 1 }
         expected = sampleTime + Double(frames)
         guard count + frames <= capacity else { lost += 1; return }
-        if stride == 1 { samples.advanced(by: count).update(from: source, count: frames) }
-        else { for n in 0..<frames { samples[count + n] = source[n * stride] } }
+        if stride == 1 {
+            samples.advanced(by: count).update(from: source, count: frames)
+        } else {
+            for n in 0..<frames { samples[count + n] = source[n * stride] }
+        }
         count += frames
     }
     func finish() -> AudioProbeResult {

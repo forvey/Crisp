@@ -9,6 +9,54 @@ enum CrispAudioDevice {
     static let status: AudioObjectPropertySelector = 0x636d7374
     static let usage: AudioObjectPropertySelector = 0x636d7573
 
+    static func healthStatus() -> CrispHALDriverStatus {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                                mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else {
+            return FileManager.default.fileExists(atPath: driverPath) ? .notLoaded : .notInstalled
+        }
+        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else {
+            return FileManager.default.fileExists(atPath: driverPath) ? .notLoaded : .notInstalled
+        }
+        for device in devices {
+            guard deviceUID(device) == uid else { continue }
+            return isReadyDevice(device) ? .ready : .outdated
+        }
+        return FileManager.default.fileExists(atPath: driverPath) ? .notLoaded : .notInstalled
+    }
+
+    private static func deviceUID(_ device: AudioDeviceID) -> String? {
+        var key = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
+                                             mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+        var reference: UnsafeMutableRawPointer?
+        var bytes = UInt32(MemoryLayout<UnsafeMutableRawPointer?>.size)
+        guard AudioObjectGetPropertyData(device, &key, 0, nil, &bytes, &reference) == noErr,
+              let reference else { return nil }
+        return Unmanaged<CFString>.fromOpaque(reference).takeRetainedValue() as String
+    }
+
+    private static func isReadyDevice(_ device: AudioDeviceID) -> Bool {
+        var key = AudioObjectPropertyAddress(mSelector: status,
+                                             mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+        guard AudioObjectHasProperty(device, &key) else { return false }
+        var raw: UnsafeMutableRawPointer?
+        var bytes = UInt32(MemoryLayout<UnsafeMutableRawPointer?>.size)
+        guard AudioObjectGetPropertyData(device, &key, 0, nil, &bytes, &raw) == noErr, let raw else { return false }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeRetainedValue()
+        guard CFGetTypeID(data) == CFDataGetTypeID()
+            && CFDataGetLength(data) == MemoryLayout<CrispMicControl>.size
+            && Array(UnsafeBufferPointer(start: CFDataGetBytePtr(data), count: 4)) == [1, 0, 0, 0]
+        else { return false }
+        // Burst writes require the 1.0.4 buffer. An older 100-ms driver
+        // would silently drop speech; keep speakers available, but do not
+        // advertise this input as usable until the bundled HAL is loaded.
+        key.mSelector = CRISP_MIC_BUFFER_STATS
+        return AudioObjectHasProperty(device, &key)
+    }
+
     static func find() -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
@@ -18,29 +66,7 @@ enum CrispAudioDevice {
         var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
         guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return nil }
         return devices.first { device in
-            var key = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
-                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
-            var reference: UnsafeMutableRawPointer?
-            var bytes = UInt32(MemoryLayout<UnsafeMutableRawPointer?>.size)
-            guard AudioObjectGetPropertyData(device, &key, 0, nil, &bytes, &reference) == noErr,
-                  let reference else { return false }
-            let value = Unmanaged<CFString>.fromOpaque(reference).takeRetainedValue()
-            guard (value as String) == uid else { return false }
-            key.mSelector = status
-            guard AudioObjectHasProperty(device, &key) else { return false }
-            var raw: UnsafeMutableRawPointer?
-            bytes = UInt32(MemoryLayout<UnsafeMutableRawPointer?>.size)
-            guard AudioObjectGetPropertyData(device, &key, 0, nil, &bytes, &raw) == noErr, let raw else { return false }
-            let data = Unmanaged<CFData>.fromOpaque(raw).takeRetainedValue()
-            guard CFGetTypeID(data) == CFDataGetTypeID()
-                && CFDataGetLength(data) == MemoryLayout<CrispMicControl>.size
-                && Array(UnsafeBufferPointer(start: CFDataGetBytePtr(data), count: 4)) == [1, 0, 0, 0]
-            else { return false }
-            // Burst writes require the 1.0.4 buffer. An older 100-ms driver
-            // would silently drop speech; keep speakers available, but do not
-            // advertise this input as usable until the bundled HAL is loaded.
-            key.mSelector = CRISP_MIC_BUFFER_STATS
-            return AudioObjectHasProperty(device, &key)
+            deviceUID(device) == uid && isReadyDevice(device)
         }
     }
 
@@ -52,7 +78,9 @@ enum CrispAudioDevice {
             AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout.size(ofValue: reference)), &reference)
         }
         guard result == noErr else {
-            throw CrispAudioWire.Failure(reason: "Virtual microphone write failed (\(result)); reconnect after checking the device")
+            throw CrispAudioWire.Failure(
+                reason: String(localized: "Virtual microphone write failed (\(result)); reconnect after checking the device")
+            )
         }
     }
 }
@@ -120,10 +148,11 @@ final class CrispMicrophoneUsage: @unchecked Sendable {
               AudioObjectGetPropertyData(device, &address, 0, nil, &size, &raw) == noErr,
               let raw else { return .unavailable }
         let data = Unmanaged<CFData>.fromOpaque(raw).takeRetainedValue()
-        guard CFGetTypeID(data) == CFDataGetTypeID(), CFDataGetLength(data) == MemoryLayout<CrispMicUsage>.size else { return .unavailable }
+        guard CFGetTypeID(data) == CFDataGetTypeID(), CFDataGetLength(data) == MemoryLayout<CrispMicUsage>.size,
+              let source = CFDataGetBytePtr(data) else { return .unavailable }
         var value = CrispMicUsage()
         withUnsafeMutableBytes(of: &value) { bytes in
-            bytes.baseAddress!.copyMemory(from: CFDataGetBytePtr(data)!, byteCount: bytes.count)
+            bytes.baseAddress?.copyMemory(from: source, byteCount: bytes.count)
         }
         guard value.version == 1, value.running <= 1 else { return .unavailable }
         return value.running == 1 ? .inUse : .idle
@@ -131,8 +160,8 @@ final class CrispMicrophoneUsage: @unchecked Sendable {
 }
 
 /// A 140-ms network gap can be followed by seven packets at once. Keep that
-/// burst intact, then drain to the HAL's single playback buffer. The hardware
-/// read clock, not this worker timer, sets the output pace. No unbounded tasks.
+/// burst intact, then drain to the HAL's playback buffer in small paced batches
+/// so tight IPC loops do not collide with the real-time HAL trylock.
 final class CrispMicrophoneWriter: @unchecked Sendable {
     private struct State {
         var device: AudioDeviceID = 0
@@ -140,6 +169,7 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
         var enabled = false
         var generation: UInt64 = UInt64.random(in: 1...UInt64.max / 2)
         var packets: [(Data, TimeInterval)] = []
+        var pumpPending = false
         var failure: @Sendable (String) -> Void = { _ in }
         var recorder: LagRecorder?
         var probe: AudioProbeStats?
@@ -147,7 +177,7 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var state = State()
     private let queue = DispatchQueue(label: "com.crisp.remote-audio.microphone", qos: .userInitiated)
-    private var timer: DispatchSourceTimer?
+    private var paceWorkItem: DispatchWorkItem?
     private var applied: UInt64 = 0
     private var resampler: CrispAudioResampler?
     private var converted: [Float] = []
@@ -155,23 +185,30 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
     init(sendToDriver: @escaping @Sendable (Data, AudioObjectPropertySelector, AudioDeviceID) throws -> Void = {
         try CrispAudioDevice.send($0, selector: $1, device: $2)
     }) { self.sendToDriver = sendToDriver }
+
     func beginProbeStats() {
         lock.lock()
         state.probe = AudioProbeStats(queueDrops: 0, staleDrops: 0, pendingPackets: 0, halWrites: 0)
         lock.unlock()
     }
+
     func finishProbeStats() -> AudioProbeStats? {
         queue.sync {
             lock.lock(); defer { lock.unlock() }
             var result = state.probe
-            if result != nil { result!.pendingPackets! += state.packets.count }
+            if var probe = result {
+                probe.pendingPackets = (probe.pendingPackets ?? 0) + state.packets.count
+                result = probe
+            }
             state.probe = nil
             return result
         }
     }
+
     func setDiagnostics(_ recorder: LagRecorder?) {
         lock.lock(); state.recorder = recorder; lock.unlock()
     }
+
     func setFailureHandler(_ handler: @escaping @Sendable (String) -> Void) {
         lock.lock(); state.failure = handler; lock.unlock()
     }
@@ -179,61 +216,114 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
     func start(device: AudioDeviceID) {
         lock.lock()
         state.device = device; state.active = true; state.enabled = false
-        state.generation &+= 1; state.packets.removeAll()
+        state.generation &+= 1; state.packets.removeAll(); state.pumpPending = false
         lock.unlock()
-        queue.async { [self] in
-            if timer == nil {
-                let clock = DispatchSource.makeTimerSource(queue: queue)
-                clock.schedule(deadline: .now(), repeating: .milliseconds(10))
-                clock.setEventHandler { [weak self] in self?.pump() }
-                timer = clock; clock.resume()
-            }
-        }
+        scheduleImmediatePump()
     }
 
     func microphone(_ enabled: Bool) {
         lock.lock()
         state.enabled = enabled && state.active
-        if state.probe != nil { state.probe!.pendingPackets! += state.packets.count }
-        state.generation &+= 1; state.packets.removeAll()
+        if var probe = state.probe {
+            probe.pendingPackets = (probe.pendingPackets ?? 0) + state.packets.count
+            state.probe = probe
+        }
+        state.generation &+= 1; state.packets.removeAll(); state.pumpPending = false
         lock.unlock()
+        scheduleImmediatePump()
     }
 
     func receive(_ data: Data) {
         lock.lock()
-        defer { lock.unlock() }
-        guard state.active, state.enabled else { return }
+        guard state.active, state.enabled else { lock.unlock(); return }
         if state.packets.count == 15 {
             state.recorder?.count("mic.queue_drop")
-            if state.probe != nil { state.probe!.queueDrops! += 1 }
+            if var probe = state.probe {
+                probe.queueDrops = (probe.queueDrops ?? 0) + 1
+                state.probe = probe
+            }
             state.packets.removeFirst()
         }
         state.packets.append((data, ProcessInfo.processInfo.systemUptime))
+        let shouldSchedule = !state.pumpPending
+        if shouldSchedule { state.pumpPending = true }
+        lock.unlock()
+        if shouldSchedule {
+            queue.async { [weak self] in self?.pump() }
+        }
+    }
+
+    /// Drops queued packets older than `maxAge` during an uplink pause without
+    /// bumping the HAL generation or forcing another 160–200 ms priming hole.
+    func flushStale(maxAge: TimeInterval = 0.2) {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        var stale = 0
+        while let first = state.packets.first, now - first.1 > maxAge {
+            state.packets.removeFirst()
+            stale += 1
+        }
+        if stale > 0 {
+            state.recorder?.count("mic.stale_drop", stale)
+            if var probe = state.probe {
+                probe.staleDrops = (probe.staleDrops ?? 0) + stale
+                state.probe = probe
+            }
+        }
+        lock.unlock()
     }
 
     func stop(waitForMute: Bool = false) {
         lock.lock()
         state.active = false; state.enabled = false; state.generation &+= 1
-        if state.probe != nil { state.probe!.pendingPackets! += state.packets.count }
+        state.pumpPending = false
+        if var probe = state.probe {
+            probe.pendingPackets = (probe.pendingPackets ?? 0) + state.packets.count
+            state.probe = probe
+        }
         state.packets.removeAll()
         lock.unlock()
         let done = DispatchSemaphore(value: 0)
-        queue.async { [self] in pump(); done.signal() }
+        queue.async { [self] in
+            paceWorkItem?.cancel(); paceWorkItem = nil
+            pump()
+            done.signal()
+        }
         if waitForMute { _ = done.wait(timeout: .now() + .milliseconds(300)) }
     }
 
+    private func scheduleImmediatePump() {
+        queue.async { [weak self] in
+            self?.paceWorkItem?.cancel()
+            self?.paceWorkItem = nil
+            self?.pump()
+        }
+    }
+
     private func pump() {
+        paceWorkItem?.cancel()
+        paceWorkItem = nil
+
         lock.lock()
-        let snapshot = state
-        state.packets.removeAll(keepingCapacity: true)
+        state.pumpPending = false
+        let batchCount = min(2, state.packets.count)
+        let batch = Array(state.packets.prefix(batchCount))
+        state.packets.removeFirst(batchCount)
+        let hasMoreQueued = !state.packets.isEmpty
+        var snapshot = state
+        snapshot.packets = batch
         lock.unlock()
-        // stop() can clear the live queue while this snapshot is in a HAL
+
+        // stop() can clear the live queue while this batch is in a HAL
         // call. Include its unwritten remainder in the final diagnostic count.
-        var pending = snapshot.packets.count
+        var pending = batch.count
         defer {
             if pending > 0, snapshot.probe != nil {
                 lock.lock()
-                if state.probe != nil { state.probe!.pendingPackets! += pending }
+                if var probe = state.probe {
+                    probe.pendingPackets = (probe.pendingPackets ?? 0) + pending
+                    state.probe = probe
+                }
                 lock.unlock()
             }
         }
@@ -248,55 +338,106 @@ final class CrispMicrophoneWriter: @unchecked Sendable {
                 converted.removeAll()
                 resampler = try CrispAudioResampler(from: 24000, to: 48000)
             }
-            if !snapshot.active { timer?.cancel(); timer = nil; resampler = nil; return }
+            if !snapshot.active { resampler = nil; converted.removeAll(); return }
             guard snapshot.enabled else { return }
-            // Drain one bounded snapshot in order. Consuming only one 20-ms
-            // packet per 10-ms tick leaves a burst waiting across many ticks.
-            for packet in snapshot.packets {
+
+            var writtenThisPass = 0
+            for packet in batch {
+                if !isCurrentGeneration(snapshot.generation) { break }
                 let age = ProcessInfo.processInfo.systemUptime - packet.1
                 snapshot.recorder?.value("mic.queue_age_ms", age * 1000)
                 if age > 0.3 {
                     snapshot.recorder?.count("mic.stale_drop")
                     lock.lock()
-                    if state.probe != nil { state.probe!.staleDrops! += 1 }
+                    if var probe = state.probe {
+                        probe.staleDrops = (probe.staleDrops ?? 0) + 1
+                        state.probe = probe
+                    }
                     lock.unlock()
                     pending -= 1
                     continue
                 }
                 converted += try resampler?.convert(CrispAudioPCM.floats(packet.0)) ?? []
-                while converted.count >= 960 {
-                    lock.lock()
-                    let stillCurrent = state.active && state.enabled && state.generation == snapshot.generation
-                    lock.unlock()
-                    guard stillCurrent else { converted.removeAll(); return }
-                    var frame = CrispMicPacket()
-                    frame.version = 1; frame.frames = 960; frame.generation = snapshot.generation
-                    withUnsafeMutableBytes(of: &frame.samples) { bytes in
-                        converted.withUnsafeBufferPointer { bytes.baseAddress?.copyMemory(from: $0.baseAddress!, byteCount: 960 * 4) }
-                    }
-                    converted.removeFirst(960)
-                    try sendToDriver(withUnsafeBytes(of: &frame) { Data($0) }, CrispAudioDevice.write, snapshot.device)
-                    snapshot.recorder?.count("mic.hal_packets_written")
-                    if snapshot.probe != nil {
-                        lock.lock()
-                        if state.probe != nil { state.probe!.halWrites! += 1 }
-                        lock.unlock()
-                    }
-                }
+                let outcome = try drainConvertedFrames(snapshot: snapshot)
+                writtenThisPass += outcome.writes
+                guard outcome.completed else { break }
                 pending -= 1
             }
-        } catch {
-            timer?.cancel(); timer = nil
-            lock.lock()
-            let report = state.active && state.generation == snapshot.generation
-            if state.generation == snapshot.generation {
-                state.active = false; state.enabled = false; state.device = 0
-                if state.probe != nil { state.probe!.pendingPackets! += state.packets.count }
-                state.packets.removeAll()
+
+            if hasMoreQueued || converted.count >= 960 {
+                schedulePacedContinuation(writtenThisPass: writtenThisPass)
             }
-            lock.unlock()
-            converted.removeAll(); resampler = nil
-            if report { snapshot.failure(error.localizedDescription) }
+        } catch {
+            handlePumpFailure(error, snapshot: snapshot)
         }
+    }
+
+    private func isCurrentGeneration(_ generation: UInt64) -> Bool {
+        lock.lock()
+        let current = state.active && state.enabled && state.generation == generation
+        lock.unlock()
+        return current
+    }
+
+    private func drainConvertedFrames(snapshot: State) throws -> (writes: Int, completed: Bool) {
+        var writes = 0
+        while converted.count >= 960 {
+            guard isCurrentGeneration(snapshot.generation) else {
+                converted.removeAll()
+                return (writes, false)
+            }
+            var frame = CrispMicPacket()
+            frame.version = 1; frame.frames = 960; frame.generation = snapshot.generation
+            withUnsafeMutableBytes(of: &frame.samples) { bytes in
+                converted.withUnsafeBufferPointer { source in
+                    if let dst = bytes.baseAddress, let src = source.baseAddress {
+                        dst.copyMemory(from: src, byteCount: 960 * 4)
+                    }
+                }
+            }
+            converted.removeFirst(960)
+            try sendToDriver(withUnsafeBytes(of: &frame) { Data($0) }, CrispAudioDevice.write, snapshot.device)
+            snapshot.recorder?.count("mic.hal_packets_written")
+            writes += 1
+            if snapshot.probe != nil {
+                lock.lock()
+                if var probe = state.probe {
+                    probe.halWrites = (probe.halWrites ?? 0) + 1
+                    state.probe = probe
+                }
+                lock.unlock()
+            }
+        }
+        return (writes, true)
+    }
+
+    private func schedulePacedContinuation(writtenThisPass: Int) {
+        lock.lock()
+        let shouldContinue = state.active && state.enabled && (!state.packets.isEmpty || converted.count >= 960)
+        if shouldContinue { state.pumpPending = true }
+        lock.unlock()
+        guard shouldContinue else { return }
+        let work = DispatchWorkItem { [weak self] in self?.pump() }
+        paceWorkItem = work
+        // Yield briefly between small batches so coreaudiod's real-time ReadInput trylock stays uncontended.
+        let delay: DispatchTimeInterval = writtenThisPass > 0 ? .milliseconds(2) : .milliseconds(0)
+        queue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func handlePumpFailure(_ error: Error, snapshot: State) {
+        paceWorkItem?.cancel(); paceWorkItem = nil
+        lock.lock()
+        let report = state.active && state.generation == snapshot.generation
+        if state.generation == snapshot.generation {
+            state.active = false; state.enabled = false; state.device = 0; state.pumpPending = false
+            if var probe = state.probe {
+                probe.pendingPackets = (probe.pendingPackets ?? 0) + state.packets.count
+                state.probe = probe
+            }
+            state.packets.removeAll()
+        }
+        lock.unlock()
+        converted.removeAll(); resampler = nil
+        if report { snapshot.failure(error.localizedDescription) }
     }
 }

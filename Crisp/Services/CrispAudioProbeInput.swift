@@ -11,6 +11,15 @@ final class CrispAudioProbeInput {
     private(set) var stats: AudioProbeStats?
     private var probingDriver = false
 
+    private static func permissionDeniedMessage() -> String {
+        String(
+            localized: """
+            Crisp lacks input recording permission on this Mac. Allow access in System Settings → \
+            Privacy & Security → Microphone and retry.
+            """
+        )
+    }
+
     // A self-test reads a real input device, even though its samples are
     // synthetic. Do not mistake denied input access for a silent microphone.
     static func prepare(_ completion: @escaping @Sendable (String?) -> Void) {
@@ -19,26 +28,36 @@ final class CrispAudioProbeInput {
         case .notDetermined:
             DispatchQueue.main.async {
                 AVCaptureDevice.requestAccess(for: .audio) { allowed in
-                    completion(allowed ? nil : "mini 的 Crisp 未获输入录音权限；请在系统设置 → 隐私与安全性 → 麦克风中允许后重试。")
+                    completion(allowed ? nil : permissionDeniedMessage())
                 }
             }
         default:
-            completion("mini 的 Crisp 未获输入录音权限；请在系统设置 → 隐私与安全性 → 麦克风中允许后重试。")
+            completion(permissionDeniedMessage())
         }
     }
 
     func start() throws {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
-            throw CrispAudioWire.Failure(reason: "mini 尚未允许 Crisp 读取输入；测试未启动。")
+            throw CrispAudioWire.Failure(
+                reason: String(localized: "Crisp is not yet allowed to read audio input; self-test was not started.")
+            )
         }
         guard device == 0, let input = CrispAudioDevice.find() else {
-            throw CrispAudioWire.Failure(reason: "远程麦克风不可用或测试已启动；请确认 mini 已安装 Crisp 配套 HAL 1.0.4 及以上并重新连接")
+            throw CrispAudioWire.Failure(
+                reason: String(
+                    localized: "Remote Microphone is unavailable or self-test is already running; install Crisp HAL 1.0.4+ and reconnect."
+                )
+            )
         }
         var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsRunning,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
         var running: UInt32 = 0, size = UInt32(MemoryLayout<UInt32>.size)
         guard AudioObjectGetPropertyData(input, &address, 0, nil, &size, &running) == noErr, running == 0 else {
-            throw CrispAudioWire.Failure(reason: "mini 有应用正在使用远程麦克风，请结束输入使用后再测试")
+            throw CrispAudioWire.Failure(
+                reason: String(
+                    localized: "Another app is currently using Remote Microphone; stop input use before running the self-test."
+                )
+            )
         }
         device = input
         // Keep the original probe layout; buffer statistics use a separate
@@ -65,7 +84,7 @@ final class CrispAudioProbeInput {
         }
         guard created == noErr, let procedure, AudioDeviceStart(input, procedure) == noErr else {
             _ = stop()
-            throw CrispAudioWire.Failure(reason: "无法读取远程麦克风测试音")
+            throw CrispAudioWire.Failure(reason: String(localized: "Unable to read test tone from Remote Microphone"))
         }
     }
 
@@ -81,10 +100,11 @@ final class CrispAudioProbeInput {
             var size = UInt32(MemoryLayout<UnsafeMutableRawPointer?>.size)
             if AudioObjectGetPropertyData(device, &address, 0, nil, &size, &raw) == noErr, let raw {
                 let data = Unmanaged<CFData>.fromOpaque(raw).takeRetainedValue()
-                if CFGetTypeID(data) == CFDataGetTypeID(), CFDataGetLength(data) == MemoryLayout<CrispMicProbeStats>.size {
+                if CFGetTypeID(data) == CFDataGetTypeID(), CFDataGetLength(data) == MemoryLayout<CrispMicProbeStats>.size,
+                   let source = CFDataGetBytePtr(data) {
                     var measured = CrispMicProbeStats()
-                    withUnsafeMutableBytes(of: &measured) {
-                        $0.baseAddress!.copyMemory(from: CFDataGetBytePtr(data)!, byteCount: $0.count)
+                    withUnsafeMutableBytes(of: &measured) { bytes in
+                        bytes.baseAddress?.copyMemory(from: source, byteCount: bytes.count)
                     }
                     if measured.version == 1 {
                         stats = AudioProbeStats(halAcceptedPackets: measured.acceptedPackets,
@@ -100,10 +120,11 @@ final class CrispAudioProbeInput {
             if AudioObjectHasProperty(device, &address),
                AudioObjectGetPropertyData(device, &address, 0, nil, &size, &raw) == noErr, let raw {
                 let data = Unmanaged<CFData>.fromOpaque(raw).takeRetainedValue()
-                if CFGetTypeID(data) == CFDataGetTypeID(), CFDataGetLength(data) == MemoryLayout<CrispMicBufferStats>.size {
+                if CFGetTypeID(data) == CFDataGetTypeID(), CFDataGetLength(data) == MemoryLayout<CrispMicBufferStats>.size,
+                   let source = CFDataGetBytePtr(data) {
                     var measured = CrispMicBufferStats()
-                    withUnsafeMutableBytes(of: &measured) {
-                        $0.baseAddress!.copyMemory(from: CFDataGetBytePtr(data)!, byteCount: $0.count)
+                    withUnsafeMutableBytes(of: &measured) { bytes in
+                        bytes.baseAddress?.copyMemory(from: source, byteCount: bytes.count)
                     }
                     if measured.version == 1 {
                         if stats == nil { stats = AudioProbeStats() }

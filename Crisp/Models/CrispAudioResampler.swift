@@ -10,7 +10,7 @@ final class CrispAudioResampler {
         guard let input = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: from, channels: 1, interleaved: false),
               let output = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: to, channels: 1, interleaved: false),
               let conversion = AVAudioConverter(from: input, to: output) else {
-            throw CrispAudioWire.Failure(reason: "Unsupported audio sample rate")
+            throw CrispAudioWire.Failure(reason: String(localized: "Unsupported audio sample rate"))
         }
         source = input
         destination = output
@@ -21,11 +21,17 @@ final class CrispAudioResampler {
     func convert(_ samples: [Float]) throws -> [Float] {
         guard !samples.isEmpty,
               let input = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: AVAudioFrameCount(samples.count)),
+              let inputChannel = input.floatChannelData?[0],
               let output = AVAudioPCMBuffer(pcmFormat: destination,
-                frameCapacity: AVAudioFrameCount(ceil(Double(samples.count) * destination.sampleRate / source.sampleRate)) + 64)
+                frameCapacity: AVAudioFrameCount(ceil(Double(samples.count) * destination.sampleRate / source.sampleRate)) + 64),
+              let outputChannel = output.floatChannelData?[0]
         else { return [] }
         input.frameLength = AVAudioFrameCount(samples.count)
-        samples.withUnsafeBufferPointer { input.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        samples.withUnsafeBufferPointer { buffer in
+            if let base = buffer.baseAddress {
+                inputChannel.update(from: base, count: samples.count)
+            }
+        }
         var supplied = false
         var error: NSError?
         let status = converter.convert(to: output, error: &error) { _, state in
@@ -35,8 +41,8 @@ final class CrispAudioResampler {
             return input
         }
         guard status != .error, error == nil else {
-            throw error ?? CrispAudioWire.Failure(reason: "Audio resampling failed")
+            throw error ?? CrispAudioWire.Failure(reason: String(localized: "Audio resampling failed"))
         }
-        return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
+        return Array(UnsafeBufferPointer(start: outputChannel, count: Int(output.frameLength)))
     }
 }

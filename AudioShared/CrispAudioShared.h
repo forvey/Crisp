@@ -72,16 +72,48 @@ static inline void CrispRingPushUnlocked(CrispAudioRing *ring, const float *samp
         ring->head = (ring->head + drop) % ring->capacity;
         ring->count -= drop;
     }
-    for (size_t i = 0; i < count; ++i) ring->samples[(ring->head + ring->count + i) % ring->capacity] = samples[i];
+    size_t writeIndex = (ring->head + ring->count) % ring->capacity;
+    size_t first = ring->capacity - writeIndex;
+    if (first > count) first = count;
+    if (first > 0) memcpy(ring->samples + writeIndex, samples, first * sizeof(float));
+    if (count > first) memcpy(ring->samples, samples + first, (count - first) * sizeof(float));
     ring->count += count;
     ring->lastWrite = mach_absolute_time();
 }
 static inline size_t CrispRingTakeUnlocked(CrispAudioRing *ring, float *output, size_t count) {
     size_t available = ring->count < count ? ring->count : count;
-    for (size_t i = 0; i < available; ++i) output[i] = ring->samples[(ring->head + i) % ring->capacity];
+    size_t first = ring->capacity - ring->head;
+    if (first > available) first = available;
+    if (first > 0) memcpy(output, ring->samples + ring->head, first * sizeof(float));
+    if (available > first) memcpy(output + first, ring->samples, (available - first) * sizeof(float));
     if (available < count) memset(output + available, 0, (count - available) * sizeof(float));
     ring->head = (ring->head + available) % ring->capacity;
     ring->count -= available;
+    return available;
+}
+// Read up to maxCount actually available samples without inserting trailing zero padding.
+static inline size_t CrispRingDrain(void *reference, float *output, size_t maxCount) {
+    CrispAudioRing *ring = reference;
+    if (!ring || maxCount == 0) return 0;
+    pthread_mutex_lock(&ring->mutex);
+    size_t available = ring->count < maxCount ? ring->count : maxCount;
+    if (available > 0) {
+        size_t first = ring->capacity - ring->head;
+        if (first > available) first = available;
+        memcpy(output, ring->samples + ring->head, first * sizeof(float));
+        if (available > first) memcpy(output + first, ring->samples, (available - first) * sizeof(float));
+        ring->head = (ring->head + available) % ring->capacity;
+        ring->count -= available;
+    }
+    pthread_mutex_unlock(&ring->mutex);
+    return available;
+}
+static inline size_t CrispRingAvailable(void *reference) {
+    CrispAudioRing *ring = reference;
+    if (!ring) return 0;
+    pthread_mutex_lock(&ring->mutex);
+    size_t available = ring->count;
+    pthread_mutex_unlock(&ring->mutex);
     return available;
 }
 // A real-time producer never waits on a worker. Contended input is dropped, not queued

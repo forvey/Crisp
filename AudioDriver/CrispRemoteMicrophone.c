@@ -321,18 +321,21 @@ static OSStatus set(Driver d, AudioObjectID id, pid_t pid, Address a, UInt32 qs,
         memcpy(&packet, CFDataGetBytePtr(payload), sizeof(packet));
         if (packet.version != 1 || packet.frames != 960) return kAudioHardwareIllegalOperationError;
         for (size_t i = 0; i < 960; ++i) packet.samples[i] = isfinite(packet.samples[i]) ? fmaxf(-1, fminf(1, packet.samples[i])) : 0;
+        bool probing = atomic_load(&probeEnabled);
+        size_t overflowFrames = 0;
         pthread_mutex_lock(&ring->mutex);
         bool accepted = atomic_load(&running) > 0 && ring->enabled && ring->generation == packet.generation;
         if (accepted) {
-            if (atomic_load(&probeEnabled) && ring->count + packet.frames > ring->capacity)
-                atomic_fetch_add(&probeOverflow, ring->count + packet.frames - ring->capacity);
+            if (probing && ring->count + packet.frames > ring->capacity)
+                overflowFrames = ring->count + packet.frames - ring->capacity;
             CrispRingPushUnlocked(ring, packet.samples, packet.frames);
         }
-        if (atomic_load(&probeEnabled)) {
+        pthread_mutex_unlock(&ring->mutex);
+        if (probing) {
+            if (overflowFrames > 0) atomic_fetch_add(&probeOverflow, overflowFrames);
             if (accepted) atomic_fetch_add(&probeAccepted, 1);
             else atomic_fetch_add(&probeRejected, 1);
         }
-        pthread_mutex_unlock(&ring->mutex);
     }
     return noErr;
 }

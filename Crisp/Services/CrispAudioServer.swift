@@ -4,13 +4,16 @@ import Network
 protocol CrispAudioBackend: AnyObject, Sendable {
     var onFailure: @Sendable (String) -> Void { get set }
     var onMicrophoneUse: @Sendable (CrispAudioWire.MicrophoneUse) -> Void { get set }
+    func halHealth() -> CrispHALDriverStatus
     func validate() throws
     func start() throws
     func stop()
     func shutdown()
     func setMicrophone(_ enabled: Bool) throws
+    func flushStaleMicrophone() throws
     func microphonePCM(_ bytes: Data)
     func downlinkPCM() -> Data
+    func downlinkPackets() -> [Data]
     func setDiagnostics(_ recorder: LagRecorder?)
     func startProbeInput() throws
     func prepareProbeInput(_ completion: @escaping @Sendable (String?) -> Void)
@@ -18,9 +21,17 @@ protocol CrispAudioBackend: AnyObject, Sendable {
 }
 
 extension CrispAudioBackend {
+    func halHealth() -> CrispHALDriverStatus { .unknown }
     func shutdown() { stop() }
+    func flushStaleMicrophone() throws {
+        try setMicrophone(false)
+        try setMicrophone(true)
+    }
+    func downlinkPackets() -> [Data] { [downlinkPCM()] }
     func setDiagnostics(_ recorder: LagRecorder?) {}
-    func startProbeInput() throws { throw CrispAudioWire.Failure(reason: "该音频后端不支持输入自测") }
+    func startProbeInput() throws {
+        throw CrispAudioWire.Failure(reason: String(localized: "This audio backend does not support input self-test"))
+    }
     func stopProbeInput() -> AudioProbeResult? { nil }
     func prepareProbeInput(_ completion: @escaping @Sendable (String?) -> Void) { completion(nil) }
 }
@@ -29,6 +40,8 @@ struct CrispAudioServerState: Sendable {
     var listening = false
     var connected = false
     var microphone = false
+    var microphoneUse: CrispAudioWire.MicrophoneUse = .unavailable
+    var halStatus: CrispHALDriverStatus = .unknown
     var peer = ""
     var error: String?
     var diagnosing = false
@@ -39,6 +52,7 @@ struct CrispAudioServerState: Sendable {
 final class CrispAudioServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.crisp.remote-audio.network", qos: .userInitiated)
     private let backend: any CrispAudioBackend
+    private let sharedKeyProvider: @Sendable () -> String?
     private let changed: @Sendable (CrispAudioServerState) -> Void
     private var listener: NWListener?
     private var client: NWConnection?
@@ -57,14 +71,23 @@ final class CrispAudioServer: @unchecked Sendable {
     private var probeStats: AudioProbeStats?
     private var probeSentAt: TimeInterval?
     private var probeReceivedAt: TimeInterval?
-    private struct Handshake { let connection: NWConnection; let timer: DispatchSourceTimer }
+    private struct Handshake {
+        let connection: NWConnection
+        let timer: DispatchSourceTimer
+        var clientNonce: String?
+        var serverNonce: String?
+        var authenticated: Bool = false
+    }
     private var pending: [UUID: Handshake] = [:]
     private var diagnostic: CrispLagSession?
     private var diagnosticID = UUID()
     private var recorder: LagRecorder?
 
-    init(backend: any CrispAudioBackend, changed: @escaping @Sendable (CrispAudioServerState) -> Void) {
+    init(backend: any CrispAudioBackend,
+         sharedKey: @escaping @Sendable () -> String? = { nil },
+         changed: @escaping @Sendable (CrispAudioServerState) -> Void) {
         self.backend = backend
+        self.sharedKeyProvider = sharedKey
         self.changed = changed
     }
 
@@ -73,6 +96,9 @@ final class CrispAudioServer: @unchecked Sendable {
             guard listener == nil else { return }
             do {
                 try backend.validate()
+                guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+                    throw CrispAudioWire.Failure(reason: String(localized: "Invalid TCP port: \(port)"))
+                }
                 let tcp = NWProtocolTCP.Options()
                 tcp.noDelay = true
                 tcp.enableKeepalive = true
@@ -81,10 +107,10 @@ final class CrispAudioServer: @unchecked Sendable {
                 tcp.keepaliveCount = 2
                 let parameters = NWParameters(tls: nil, tcp: tcp)
                 if loopbackOnly {
-                    parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
+                    parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: nwPort)
                 }
                 let newListener = try loopbackOnly ? NWListener(using: parameters) :
-                    NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+                    NWListener(using: parameters, on: nwPort)
                 listener = newListener
                 newListener.newConnectionHandler = { [weak self, weak newListener] connection in
                     guard let self, self.listener === newListener else { connection.cancel(); return }
@@ -93,8 +119,13 @@ final class CrispAudioServer: @unchecked Sendable {
                 newListener.stateUpdateHandler = { [weak self, weak newListener] phase in
                     guard let self, self.listener === newListener else { return }
                     switch phase {
-                    case .ready: self.state.listening = true; self.publish()
-                    case let .failed(error): self.stopOnQueue(error: "TCP listener: \(error.localizedDescription)")
+                    case .ready:
+                        self.state.halStatus = self.backend.halHealth()
+                        self.state.listening = true
+                        self.publish()
+                    case let .failed(error):
+                        let desc = error.localizedDescription
+                        self.stopOnQueue(error: String(localized: "TCP listener: \(desc)"))
                     default: break
                     }
                 }
@@ -109,6 +140,30 @@ final class CrispAudioServer: @unchecked Sendable {
     func shutdown() { queue.sync { stopOnQueue(error: nil); backend.shutdown() } }
 
     private func publish() { changed(state) }
+
+    private func normalizedSharedKey() -> String? {
+        guard let key = sharedKeyProvider()?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+            return nil
+        }
+        return key
+    }
+
+    private static func peerLabel(_ connection: NWConnection) -> String {
+        let endpoint = connection.currentPath?.remoteEndpoint ?? connection.endpoint
+        if case let .hostPort(host, _) = endpoint {
+            switch host {
+            case .ipv4(let value):
+                return value.debugDescription
+            case .ipv6(let value):
+                return value.debugDescription.components(separatedBy: "%")[0]
+            case .name(let name, _):
+                return name
+            @unknown default:
+                break
+            }
+        }
+        return String(describing: endpoint)
+    }
 
     private func stopOnQueue(error: String?) {
         diagnostic?.close(); diagnostic = nil
@@ -126,8 +181,8 @@ final class CrispAudioServer: @unchecked Sendable {
     }
 
     private func accept(_ connection: NWConnection) {
-        // Read exactly one small preface before assigning the audio slot. A
-        // diagnostic-only client must never reset microphones or start capture.
+        // Read preface frames before assigning the audio slot. A diagnostic-only
+        // client must never reset microphones or start capture.
         guard listener != nil, pending.count < 4 else { connection.cancel(); return }
         let token = UUID()
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -136,6 +191,10 @@ final class CrispAudioServer: @unchecked Sendable {
         pending[token] = Handshake(connection: connection, timer: timer)
         timer.resume()
         connection.start(queue: queue)
+        receivePrefaceFrame(token: token, connection: connection)
+    }
+
+    private func receivePrefaceFrame(token: UUID, connection: NWConnection) {
         connection.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] data, _, eof, error in
             guard let self, self.pending[token]?.connection === connection else { return }
             guard let data, data.count == 4, !eof, error == nil else {
@@ -146,33 +205,101 @@ final class CrispAudioServer: @unchecked Sendable {
                 self.removePending(token)?.cancel(); return
             }
             connection.receive(minimumIncompleteLength: length, maximumLength: length) { [weak self] payload, _, eof, error in
-                guard let self, self.removePending(token) === connection else { return }
-                guard let payload, payload.count == length, !eof, error == nil else { connection.cancel(); return }
-                if payload == LagWire.hello {
-                    guard self.diagnostic == nil else { connection.cancel(); return }
-                    let diagnosticID = UUID()
-                    self.diagnosticID = diagnosticID
-                    let peer = CrispLagSession(connection: connection, attach: { [weak self] recorder in
-                        guard let self else { return }
-                        self.queue.async {
-                            guard self.diagnosticID == diagnosticID else { return }
-                            self.state.diagnosing = recorder != nil
-                            self.recorder = recorder?.scope.audio == true ? recorder : nil
-                            self.backend.setDiagnostics(self.recorder)
-                            self.publish()
-                        }
-                    }, finished: { [weak self] in
-                        guard let self else { return }
-                        self.queue.async {
-                            if self.diagnosticID == diagnosticID { self.diagnostic = nil }
-                        }
-                    })
-                    self.diagnostic = peer; peer.start()
-                } else if payload == Data([1]) + CrispAudioWire.hello {
-                    self.adoptAudio(connection, hello: data + payload)
-                } else { connection.cancel() }
+                guard let self, self.pending[token]?.connection === connection else { return }
+                guard let payload, payload.count == length, !eof, error == nil else {
+                    self.removePending(token)?.cancel(); return
+                }
+                self.handlePrefacePayload(token: token, connection: connection, header: data, payload: payload)
             }
         }
+    }
+
+    private func handlePrefacePayload(token: UUID, connection: NWConnection, header: Data, payload: Data) {
+        guard var handshake = pending[token], handshake.connection === connection else { return }
+        let requiredKey = normalizedSharedKey()
+
+        if let clientNonce = handshake.clientNonce, let serverNonce = handshake.serverNonce, !handshake.authenticated {
+            guard let key = requiredKey,
+                  CrispAudioAuth.verifyProof(payload, sharedKey: key, clientNonce: clientNonce, serverNonce: serverNonce) else {
+                removePending(token)?.cancel()
+                let peer = Self.peerLabel(connection)
+                state.error = String(localized: "Rejected connection: invalid LAN key from \(peer)")
+                publish()
+                return
+            }
+            handshake.authenticated = true
+            pending[token] = handshake
+            connection.send(content: CrispAudioAuth.makeOKFrame(), completion: .contentProcessed { [weak self] error in
+                guard let self else { return }
+                if error != nil {
+                    self.removePending(token)?.cancel()
+                } else {
+                    self.receivePrefaceFrame(token: token, connection: connection)
+                }
+            })
+            return
+        }
+
+        if !handshake.authenticated, let clientNonce = CrispAudioAuth.parseInit(payload) {
+            guard requiredKey != nil else {
+                removePending(token)?.cancel()
+                return
+            }
+            let serverNonce = CrispAudioAuth.randomNonceHex()
+            handshake.clientNonce = clientNonce
+            handshake.serverNonce = serverNonce
+            pending[token] = handshake
+            connection.send(content: CrispAudioAuth.makeChallengeFrame(serverNonce: serverNonce),
+                            completion: .contentProcessed { [weak self] error in
+                guard let self else { return }
+                if error != nil {
+                    self.removePending(token)?.cancel()
+                } else {
+                    self.receivePrefaceFrame(token: token, connection: connection)
+                }
+            })
+            return
+        }
+
+        if requiredKey != nil && !handshake.authenticated {
+            removePending(token)?.cancel()
+            let peer = Self.peerLabel(connection)
+            state.error = String(localized: "Rejected unauthenticated connection from \(peer)")
+            publish()
+            return
+        }
+
+        guard removePending(token) === connection else { return }
+        if payload == LagWire.hello {
+            adoptDiagnostics(connection)
+        } else if payload == Data([1]) + CrispAudioWire.hello {
+            adoptAudio(connection, hello: header + payload)
+        } else {
+            connection.cancel()
+        }
+    }
+
+    private func adoptDiagnostics(_ connection: NWConnection) {
+        guard diagnostic == nil else { connection.cancel(); return }
+        let newDiagnosticID = UUID()
+        diagnosticID = newDiagnosticID
+        let peer = CrispLagSession(connection: connection, attach: { [weak self] recorder in
+            guard let self else { return }
+            self.queue.async {
+                guard self.diagnosticID == newDiagnosticID else { return }
+                self.state.diagnosing = recorder != nil
+                self.recorder = recorder?.scope.audio == true ? recorder : nil
+                self.backend.setDiagnostics(self.recorder)
+                self.publish()
+            }
+        }, finished: { [weak self] in
+            guard let self else { return }
+            self.queue.async {
+                if self.diagnosticID == newDiagnosticID { self.diagnostic = nil }
+            }
+        })
+        diagnostic = peer
+        peer.start()
     }
 
     private func removePending(_ token: UUID) -> NWConnection? {
@@ -194,13 +321,18 @@ final class CrispAudioServer: @unchecked Sendable {
         sends = 0
         starved = false
         state.error = nil
-        state.peer = String(describing: connection.endpoint)
+        state.halStatus = backend.halHealth()
+        state.peer = Self.peerLabel(connection)
         connection.stateUpdateHandler = { [weak self, weak connection] phase in
             guard let self, let connection, self.client === connection else { return }
             switch phase {
-            case let .failed(error): self.closeClient(error: "TCP: \(error.localizedDescription)")
-            case .cancelled: self.closeClient(error: nil)
-            case .waiting: self.closeClient(error: "Network unavailable; reconnect manually")
+            case let .failed(error):
+                let desc = error.localizedDescription
+                self.closeClient(error: String(localized: "TCP: \(desc)"))
+            case .cancelled:
+                self.closeClient(error: nil)
+            case .waiting:
+                self.closeClient(error: String(localized: "Network unavailable; reconnect manually"))
             default: break
             }
         }
@@ -232,12 +364,13 @@ final class CrispAudioServer: @unchecked Sendable {
 
     private func process(_ bytes: Data, _ connection: NWConnection) throws {
         for message in try decoder.receive(bytes) {
-            if case .pcm = message, probeMode == 2, probeStats != nil {
+            if case .pcm = message, probeMode == 2, var stats = probeStats {
                 let now = ProcessInfo.processInfo.systemUptime
-                probeStats!.receivedPackets! += 1
+                stats.receivedPackets = (stats.receivedPackets ?? 0) + 1
                 if let last = probeReceivedAt {
-                    probeStats!.maxReceiveGapMS = max(probeStats!.maxReceiveGapMS!, Int((now - last) * 1000))
+                    stats.maxReceiveGapMS = max(stats.maxReceiveGapMS ?? 0, Int((now - last) * 1000))
                 }
+                probeStats = stats
                 probeReceivedAt = now
             }
             if let action = try session.receive(message, now: ProcessInfo.processInfo.systemUptime) {
@@ -255,13 +388,17 @@ final class CrispAudioServer: @unchecked Sendable {
                         self.queue.async {
                             guard self.client === connection else { return }
                             self.microphoneUse = use
+                            self.state.microphoneUse = use
+                            self.state.halStatus = self.backend.halHealth()
                             do {
                                 try self.applyMicrophone()
                                 self.send(.microphoneUse(use), connection)
+                                self.publish()
                             } catch { self.closeClient(error: error.localizedDescription) }
                         }
                     }
                     try backend.start(); send(.hello, connection); state.connected = true
+                    state.halStatus = backend.halHealth()
                 case .microphone:
                     try applyMicrophone()
                 case let .probe(mode):
@@ -288,7 +425,9 @@ final class CrispAudioServer: @unchecked Sendable {
     private func controlProbe(_ mode: UInt8, _ connection: NWConnection) throws {
         if mode == 0 {
             let finished = probeMode
-            guard finished != 0 else { throw CrispAudioWire.Failure(reason: "没有进行中的音频诊断") }
+            guard finished != 0 else {
+                throw CrispAudioWire.Failure(reason: String(localized: "No audio diagnostics currently in progress"))
+            }
             probeMode = 0
             probeID = nil
             var result = finished == 2 ? backend.stopProbeInput() : nil
@@ -306,13 +445,14 @@ final class CrispAudioServer: @unchecked Sendable {
             return
         }
         guard probeMode == 0, !session.microphoneEnabled else {
-            throw CrispAudioWire.Failure(reason: "音频诊断不能覆盖正在使用的麦克风")
+            throw CrispAudioWire.Failure(reason: String(localized: "Audio diagnostics cannot override an active microphone"))
         }
         if mode == 2 {
             guard microphoneUse == .idle else {
-                sendProbe(AudioProbeReply(mode: mode, state: "error", error: microphoneUse == .unavailable
-                    ? "mini 远程麦克风不可用；请安装 Crisp 配套 HAL 1.0.4 及以上后重新连接"
-                    : "mini 有应用正在使用远程麦克风，请结束输入使用后再诊断"), connection)
+                let message = microphoneUse == .unavailable
+                    ? String(localized: "Remote Microphone is unavailable; install Crisp HAL 1.0.4+ and reconnect.")
+                    : String(localized: "Another app is currently using Remote Microphone; stop input use before running diagnostics.")
+                sendProbe(AudioProbeReply(mode: mode, state: "error", error: message), connection)
                 return
             }
             probeMode = mode; probeDeadline = ProcessInfo.processInfo.systemUptime + 18
@@ -337,7 +477,11 @@ final class CrispAudioServer: @unchecked Sendable {
     private func startProbe(_ mode: UInt8, _ connection: NWConnection) {
         do {
             if mode == 2 {
-                guard microphoneUse == .idle else { throw CrispAudioWire.Failure(reason: "mini 远程麦克风不可用或正被应用使用") }
+                guard microphoneUse == .idle else {
+                    throw CrispAudioWire.Failure(
+                        reason: String(localized: "Remote Microphone is unavailable or currently in use by an app")
+                    )
+                }
                 try backend.startProbeInput()
             }
             probeMode = mode; probeSequence = 0
@@ -355,7 +499,7 @@ final class CrispAudioServer: @unchecked Sendable {
 
     private func sendProbe(_ reply: AudioProbeReply, _ connection: NWConnection) {
         guard let data = try? JSONEncoder().encode(reply), data.count <= 1023 else {
-            closeClient(error: "音频诊断结果超过协议限制"); return
+            closeClient(error: String(localized: "Audio diagnostics result exceeded protocol limit")); return
         }
         send(.probeReply(data), connection)
     }
@@ -364,37 +508,52 @@ final class CrispAudioServer: @unchecked Sendable {
         guard let client else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard session.handshaken else {
-            if now - acceptedAt >= 8 { closeClient(error: "Client hello timed out") }
+            if now - acceptedAt >= 8 { closeClient(error: String(localized: "Client hello timed out")) }
             return
         }
         recorder?.interval("audio.send_tick_ms")
         if probeMode != 0, now >= probeDeadline {
-            closeClient(error: "音频诊断超时，已释放输入设备"); return
+            closeClient(error: String(localized: "Audio diagnostics timed out; input device released")); return
         }
         if state.microphone, session.microphoneExpired(now: now), !starved {
             recorder?.count("mic.starvation_reset")
             do {
-                try backend.setMicrophone(false)
-                try backend.setMicrophone(true) // Flush the epoch/queue; don't repeat old audio during an uplink gap.
+                try backend.flushStaleMicrophone()
             } catch { closeClient(error: error.localizedDescription); return }
             starved = true
         }
         recorder?.value("audio.pending_packets", Double(sends))
         guard sends < 5 else {
             recorder?.count("audio.send_backlog_disconnect")
-            closeClient(error: "Audio send backlog exceeded 100 ms; reconnect manually"); return
+            closeClient(error: String(localized: "Audio send backlog exceeded 100 ms; reconnect manually")); return
         }
-        let pcm = probeMode == 1 ? AudioProbeSignal.pcm(probeSequence) : backend.downlinkPCM()
         if probeMode == 1 {
+            let pcm = AudioProbeSignal.pcm(probeSequence)
             probeSequence += 1
-            probeStats!.sentPackets! += 1
-            if let last = probeSentAt {
-                probeStats!.maxSendGapMS = max(probeStats!.maxSendGapMS!, Int((now - last) * 1000))
+            if var stats = probeStats {
+                stats.sentPackets = (stats.sentPackets ?? 0) + 1
+                if let last = probeSentAt {
+                    stats.maxSendGapMS = max(stats.maxSendGapMS ?? 0, Int((now - last) * 1000))
+                }
+                probeStats = stats
             }
             probeSentAt = now
+            guard pcm.count == CrispAudioWire.pcmBytes else {
+                closeClient(error: String(localized: "Invalid capture packet size")); return
+            }
+            send(.pcm(pcm), client)
+            return
         }
-        guard pcm.count == CrispAudioWire.pcmBytes else { closeClient(error: "Invalid capture packet size"); return }
-        send(.pcm(pcm), client) // Includes 960 zero bytes every 20 ms when no application is playing.
+        for pcm in backend.downlinkPackets() {
+            guard sends < 5 else {
+                recorder?.count("audio.send_backlog_disconnect")
+                closeClient(error: String(localized: "Audio send backlog exceeded 100 ms; reconnect manually")); return
+            }
+            guard pcm.count == CrispAudioWire.pcmBytes else {
+                closeClient(error: String(localized: "Invalid capture packet size")); return
+            }
+            send(.pcm(pcm), client)
+        }
     }
 
     private func send(_ message: CrispAudioWire.Message, _ connection: NWConnection) {
@@ -421,6 +580,7 @@ final class CrispAudioServer: @unchecked Sendable {
         state.connected = false
         state.microphone = false
         microphoneUse = .unavailable
+        state.microphoneUse = .unavailable
         probeMode = 0
         probeID = nil; probeStats = nil; probeSentAt = nil; probeReceivedAt = nil
         state.peer = ""
